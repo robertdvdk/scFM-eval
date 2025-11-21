@@ -1,0 +1,24 @@
+repos:
+  # Ruff: The all-in-one linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Updated to match pyproject.toml version
+    rev: v0.14.5
+    hooks:
+      # Run the linter
+      - id: ruff
+        args: [ --fix ]
+      # Run the formatter
+      - id: ruff-format
+
+  # Standard checks for code hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        # Prevent committing files larger than 10MB (Crucial for biology datasets)
+        args: ['--maxkb=10000']
+      - id: check-case-conflict
+      - id: check-merge-conflict
