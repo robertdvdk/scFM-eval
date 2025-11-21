@@ -9,20 +9,26 @@ ENV UV_COMPILE_BYTECODE=1
 # Copy mode is required for Docker layer caching to work reliably
 ENV UV_LINK_MODE=copy
 
+ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
+
 # Install dependencies specifically (this layer is cached until pyproject.toml changes)
 # We install into a virtual env at /app/.venv
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev
+RUN uv sync --frozen --no-install-project
 
 # 2. Runtime Stage: Copy only the environment
 FROM python:3.13-slim
 WORKDIR /app
 
+RUN apt-get update && \
+    apt-get install -y git && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy the pre-built virtual environment from the builder
-COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /opt/venv /opt/venv
 
 # Add the virtual environment to the PATH
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code AND configuration, preserving folder structure
 # This ensures /app/src/main.py exists and /app/configs/config.yaml exists

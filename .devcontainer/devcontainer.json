@@ -1,0 +1,26 @@
+{
+  "name": "scfm-eval-env",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
+        "python.testing.pytestArgs": ["tests"],
+        "python.testing.unittestEnabled": false,
+        "python.testing.pytestEnabled": true
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter@2025.7.0",
+        "charliermarsh.ruff"
+      ]
+    }
+  },
+  "remoteUser": "root",
+  // Mount the current workspace folder to /app
+  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind",
+  "workspaceFolder": "/app"
+}

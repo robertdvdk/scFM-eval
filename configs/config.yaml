@@ -1,2 +1,6 @@
-task:
-  name: "test_run"
+defaults:
+  - task: batch_integration  # 1. Load configs/task/batch_integration.yaml
+  - _self_                   # 2. Then apply any overrides from this file (if any)
+
+# You can still define global variables here if you want
+seed: 42

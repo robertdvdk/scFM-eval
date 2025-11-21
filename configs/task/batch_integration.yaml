@@ -1,0 +1,24 @@
+# @package _global_
+
+task:
+  name: "batch_integration"
+
+  # Paths to the data artifacts
+  # In production, these might be passed via CLI overrides
+  paths:
+    ground_truth: "data/neftel_ss2.h5ad"
+    submission: "data/CancerGPT_epoch_15_neftel_ss2.h5ad"
+
+  # Column names in the Ground Truth .obs dataframe
+  metadata:
+    batch_key: "batch_id"
+    label_key: "cell_type"
+
+  # Configuration for scib-metrics
+  metrics:
+    embedding_key: "X_emb"  # Where to store user embeddings in the merged object
+    n_neighbors: 15         # For kNN graph construction
+
+  dataset:
+    name: "Neftel_brain_10X"
+    n_hvg: None  # Number of highly variable genes to select
