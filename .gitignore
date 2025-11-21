@@ -3,6 +3,10 @@ outputs/
 .hydra/
 *.log
 
+# Caches
+.pytest_cache/
+.ruff_cache/
+
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -15,5 +19,12 @@ wheels/
 .venv
 
 # Data
-data/
+data/*
+!data/.gitkeep
+
+# Large files
 *.h5ad
+*.h5
+*.csv.gz
+*.pt
+*.pth
