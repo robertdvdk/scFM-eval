@@ -1,0 +1,36 @@
+# @package _global_
+
+task:
+  name: drug_response_prediction
+
+  # Required paths (all relative to project root)
+  paths:
+    drug_info: data/drug_response_prediction/drug/metadata.csv
+    cell_line_info: data/drug_response_prediction/cell_line/metadata.txt
+    drug_features: data/drug_response_prediction/drug/graph_feature
+    ground_truth: data/drug_response_prediction/ground_truth.csv
+    submission: data/drug_response_prediction/embedding/submission.csv
+
+  # Split configuration
+  # For cell line split: set both to null
+  # For drug split: specify both test_drug and val_drug
+  test_drug: null  # e.g., "Cisplatin" or null for cell line split
+  val_drug: null   # e.g., "Paclitaxel" or null for cell line split
+
+  # TCGA labels for cell line split (empty list uses all)
+  tcga_labels: []
+
+  # Training hyperparameters
+  batch_size: 256
+  learning_rate: 0.003
+  epochs: 500
+  patience: 10  # Early stopping patience
+
+  # System configuration
+  gpu_id: 0  # -1 for CPU, 0+ for GPU index
+  num_workers: 4  # DataLoader workers
+  seed: 42
+
+  # Output configuration
+  save_predictions: true
+  output_dir: outputs  # Relative to Hydra output dir

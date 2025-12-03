@@ -6,6 +6,7 @@ outputs/
 # Caches
 .pytest_cache/
 .ruff_cache/
+.github/
 
 # Python-generated files
 __pycache__/
@@ -28,3 +29,4 @@ data/*
 *.csv.gz
 *.pt
 *.pth
+*.pkl

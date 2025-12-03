@@ -20,14 +20,17 @@ RUN uv sync --frozen --no-install-project
 FROM python:3.13-slim
 WORKDIR /app
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
 RUN apt-get update && \
-    apt-get install -y git && \
+    apt-get install -y git wget && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtual environment from the builder
 COPY --from=builder /opt/venv /opt/venv
 
 # Add the virtual environment to the PATH
+ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code AND configuration, preserving folder structure

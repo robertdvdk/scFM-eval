@@ -6,10 +6,10 @@ task:
   # Paths to the data artifacts
   # In production, these might be passed via CLI overrides
   paths:
-    ground_truth: data/batch_integration/neftel_ss2.h5ad
+    ground_truth: data/neftel_ss2.h5ad
     submissions:
-      - data/batch_integration/CancerGPT_epoch_15_neftel_ss2.h5ad
-      - data/batch_integration/CancerGPT_train_medium_compile_bf16_atheusdataset_7367148_neftel_ss2.h5ad
+      - data/CancerGPT_epoch_15_neftel_ss2.h5ad
+      - data/CancerGPT_train_medium_compile_bf16_atheusdataset_7367148_neftel_ss2.h5ad
 
   # Column names in the Ground Truth .obs dataframe
   metadata:

@@ -22,5 +22,10 @@
   "remoteUser": "root",
   // Mount the current workspace folder to /app
   "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind",
-  "workspaceFolder": "/app"
+  "workspaceFolder": "/app",
+
+  "runArgs": [
+    "--gpus", "all",
+    "--shm-size", "8g"
+  ]
 }

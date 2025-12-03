@@ -1,7 +1,7 @@
 import hydra
 from omegaconf import DictConfig
 
-from tasks.batch_integration import BatchIntegrationRunner
+from tasks import BatchIntegrationRunner, DrugResponsePredictionRunner
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -12,6 +12,9 @@ def main(cfg: DictConfig):
     # Dispatcher: Decide which runner to use based on the config
     if task_name == "batch_integration":
         runner = BatchIntegrationRunner(cfg)
+        results = runner.run()
+    elif task_name == "drug_response_prediction":
+        runner = DrugResponsePredictionRunner(cfg)
         results = runner.run()
     elif task_name == "perturbation":
         # runner = PerturbationRunner(cfg)
