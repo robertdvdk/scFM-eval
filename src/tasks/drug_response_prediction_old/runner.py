@@ -2,29 +2,23 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 import hydra
 import numpy as np
 import pandas as pd
 import torch
-import torch.optim as optim
 from omegaconf import DictConfig
 from scipy.stats import pearsonr
-from torch_geometric.loader import DataLoader
+
+from loaders import create_dataloaders, generate_drug_splits
 
 from .model import MLP, UGCNN, CombinedMLP
-from .utils import (
-    DataSplit,
-    DrugSplit,
-    FeatureExtract,
-    MetadataGenerate,
-)
 
 log = logging.getLogger(__name__)
 
 
-class DrugResponsePredictionRunner:
+class DrugResponsePredictionRunnerOld:
     """Runner for drug response prediction evaluation task."""
 
     def __init__(self, cfg: DictConfig):
@@ -37,7 +31,7 @@ class DrugResponsePredictionRunner:
         self.cfg = cfg
         self._validate_config()
         self._set_device()
-        # self._seed_everything()
+        self._seed_everything()
 
     def _validate_config(self):
         """Validate required configuration parameters."""
@@ -59,13 +53,22 @@ class DrugResponsePredictionRunner:
             except (KeyError, AttributeError) as err:
                 raise ValueError(f"Missing required config: {'.'.join(path_parts)}") from err
 
-        # Validate test and val drugs
+        # Check split configuration
+        drug_proportion = self.cfg.task.get("drug_proportion")
         test_drug = self.cfg.task.get("test_drug")
         val_drug = self.cfg.task.get("val_drug")
-        if (test_drug is None and val_drug is not None) or (test_drug is not None and val_drug is None):
-            raise ValueError("test_drug and val_drug must both be None or both be specified")
-        if test_drug is not None and test_drug == val_drug:
-            raise ValueError("test_drug and val_drug must be different")
+
+        if drug_proportion is not None:
+            if not (0 < drug_proportion <= 1):
+                raise ValueError("drug_proportion must be between 0 and 1")
+            # In proportion mode, test_drug and val_drug are ignored
+            log.info(f"Using proportion mode: {drug_proportion:.1%} of drugs will be tested")
+        else:
+            # Specific mode validation
+            if (test_drug is None) != (val_drug is None):
+                raise ValueError("Both test_drug and val_drug must be set, or both must be null")
+            if test_drug is not None and test_drug == val_drug:
+                raise ValueError("test_drug and val_drug must be different")
 
     def _set_device(self):
         """Set the compute device based on configuration."""
@@ -89,84 +92,12 @@ class DrugResponsePredictionRunner:
         torch.cuda.manual_seed(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
         log.info(f"Random seed set to {seed}")
 
-    def _load_data(self):
-        """Load and prepare data for training and evaluation."""
-        # Resolve absolute paths
-        drug_info_file = hydra.utils.to_absolute_path(self.cfg.task.paths.drug_info)
-        cell_line_info_file = hydra.utils.to_absolute_path(self.cfg.task.paths.cell_line_info)
-        drug_feature_file = hydra.utils.to_absolute_path(self.cfg.task.paths.drug_features)
-        ground_truth_file = hydra.utils.to_absolute_path(self.cfg.task.paths.ground_truth)
-        submission_file = hydra.utils.to_absolute_path(self.cfg.task.paths.submission)
-
-        log.info(f"Loading drug info from {drug_info_file}")
-        log.info(f"Loading cell line info from {cell_line_info_file}")
-        log.info(f"Loading drug features from {drug_feature_file}")
-        log.info(f"Loading ground truth from {ground_truth_file}")
-        log.info(f"Loading submission (gene expression) from {submission_file}")
-
-        # Generate metadata and data indices
-        drug_feature, gexpr_feature, data_idx = MetadataGenerate(
-            drug_info_file,
-            cell_line_info_file,
-            drug_feature_file,
-            submission_file,
-            ground_truth_file,
-        )
-
-        return drug_feature, gexpr_feature, data_idx
-
-    def _split_data(self, data_idx):
-        """Split data into train, validation, and test sets."""
-        test_drug = self.cfg.task.get("test_drug")
-        val_drug = self.cfg.task.get("val_drug")
-        tcga_labels = [
-            "ALL",
-            "BLCA",
-            "BRCA",
-            "CESC",
-            "DLBC",
-            "LIHC",
-            "LUAD",
-            "ESCA",
-            "GBM",
-            "HNSC",
-            "KIRC",
-            "LAML",
-            "LCML",
-            "LGG",
-            "LUSC",
-            "MESO",
-            "MM",
-            "NB",
-            "OV",
-            "PAAD",
-            "SCLC",
-            "SKCM",
-            "STAD",
-            "THCA",
-            "COAD/READ",
-        ]
-
-        if test_drug is None and val_drug is None:
-            # Cell line split
-            log.info("Performing cell line split (95/5)")
-            data_train_idx, data_test_idx = DataSplit(data_idx, tcga_labels, ratio=0.95)
-            data_train_idx, data_val_idx = DataSplit(data_train_idx, tcga_labels, ratio=1 - 0.05 / 0.95)
-        else:
-            # Drug split
-            log.info(f"Performing drug split (test={test_drug}, val={val_drug})")
-            data_train_idx, data_test_idx = DrugSplit(data_idx, test_drug)
-            if len(data_test_idx) == 0:
-                raise ValueError(f"Test drug {test_drug} not found in data")
-            data_train_idx, data_val_idx = DrugSplit(data_train_idx, val_drug)
-            if len(data_val_idx) == 0:
-                raise ValueError(f"Validation drug {val_drug} not found in data")
-
-        log.info(f"Data split: train={len(data_train_idx)}, val={len(data_val_idx)}, test={len(data_test_idx)}")
-        return data_train_idx, data_val_idx, data_test_idx
+        if self.cfg.task.get("fully_deterministic", False):
+            log.info("Using fully deterministic algorithms")
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+            torch.use_deterministic_algorithms(True)
 
     def _create_model(self, gexpr_dim: int):
         """Create and initialize the model."""
@@ -233,51 +164,29 @@ class DrugResponsePredictionRunner:
 
         return total_loss / len(data_loader), pcc, all_targets, all_outputs
 
-    def run(self) -> Dict[str, Any]:
+    def _run_single_split(self, test_drug: str | None, val_drug: str | None) -> Dict[str, Any]:
         """
-        Execute the drug response prediction evaluation.
+        Run evaluation for a single test/val drug split.
+
+        Args:
+            test_drug: Test drug ID or None for cell line split
+            val_drug: Validation drug ID or None for cell line split
 
         Returns:
             Dictionary containing evaluation metrics
         """
-        log.info("Starting drug response prediction evaluation")
+        split_name = test_drug if test_drug else "cell_line_split"
+        log.info(f"Running split: test={test_drug}, val={val_drug}")
 
-        # Load data
-        drug_feature, gexpr_feature, data_idx = self._load_data()
-        gexpr_dim = gexpr_feature.shape[-1]
-        log.info(f"Gene expression dimension: {gexpr_dim}")
-
-        # Split data
-        data_train_idx, data_val_idx, data_test_idx = self._split_data(data_idx)
-
-        # Extract features
-        log.info("Extracting features for training set")
-        X_drug_train, X_gexpr_train, Y_train, _ = FeatureExtract(data_train_idx, drug_feature, gexpr_feature)
-
-        log.info("Extracting features for validation set")
-        X_drug_val, X_gexpr_val, Y_val, _ = FeatureExtract(data_val_idx, drug_feature, gexpr_feature)
-
-        log.info("Extracting features for test set")
-        X_drug_test, X_gexpr_test, Y_test, test_metadata = FeatureExtract(data_test_idx, drug_feature, gexpr_feature)
-
-        # Create data loaders
-        batch_size = self.cfg.task.get("batch_size", 256)
-        train_loader = DataLoader(
-            list(zip(X_drug_train, X_gexpr_train, Y_train, strict=True)),
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=self.cfg.task.get("num_workers", 4),
-        )
-        val_loader = DataLoader(
-            list(zip(X_drug_val, X_gexpr_val, Y_val, strict=True)),
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=self.cfg.task.get("num_workers", 4),
-        )
-        test_loader = DataLoader(
-            list(zip(X_drug_test, X_gexpr_test, Y_test, strict=True)),
-            batch_size=batch_size,
-            shuffle=False,
+        train_loader, val_loader, test_loader, test_metadata, gexpr_dim = create_dataloaders(
+            drug_info_file=Path(hydra.utils.to_absolute_path(self.cfg.task.paths.drug_info)),
+            cell_line_info_file=Path(hydra.utils.to_absolute_path(self.cfg.task.paths.cell_line_info)),
+            drug_feature_dir=Path(hydra.utils.to_absolute_path(self.cfg.task.paths.drug_features)),
+            ground_truth_file=Path(hydra.utils.to_absolute_path(self.cfg.task.paths.ground_truth)),
+            submission_file=Path(hydra.utils.to_absolute_path(self.cfg.task.paths.submission)),
+            val_drug=val_drug,
+            test_drug=test_drug,
+            batch_size=self.cfg.task.get("batch_size", 256),
             num_workers=self.cfg.task.get("num_workers", 4),
         )
 
@@ -286,7 +195,7 @@ class DrugResponsePredictionRunner:
 
         # Setup training
         parameters = list(drug_gcnn.parameters()) + list(gexpr_mlp.parameters()) + list(comb_mlp.parameters())
-        optimizer = optim.Adam(
+        optimizer = torch.optim.Adam(
             parameters,
             lr=self.cfg.task.get("learning_rate", 0.003),
         )
@@ -304,23 +213,19 @@ class DrugResponsePredictionRunner:
             train_loss = self._train_epoch(train_loader, drug_gcnn, gexpr_mlp, comb_mlp, optimizer, criterion)
             val_loss, val_pcc, _, _ = self._evaluate(val_loader, drug_gcnn, gexpr_mlp, comb_mlp, criterion)
 
-            log.info(
-                f"Epoch {epoch + 1}/{epochs} - "
-                f"Train Loss: {train_loss:.4f}, "
-                f"Val Loss: {val_loss:.4f}, "
-                f"Val PCC: {val_pcc:.4f}"
-            )
-
             if val_pcc > best_val_pcc:
                 best_val_pcc = val_pcc
                 best_models = (
-                    drug_gcnn.state_dict(),
-                    gexpr_mlp.state_dict(),
-                    comb_mlp.state_dict(),
+                    drug_gcnn.state_dict().copy(),
+                    gexpr_mlp.state_dict().copy(),
+                    comb_mlp.state_dict().copy(),
                 )
                 patience_counter = 0
             else:
                 patience_counter += 1
+
+            if (epoch + 1) % 50 == 0:
+                log.info(f"Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.4f}, Val PCC: {val_pcc:.4f}")
 
             if patience_counter >= patience:
                 log.info(f"Early stopping at epoch {epoch + 1}")
@@ -332,33 +237,85 @@ class DrugResponsePredictionRunner:
         comb_mlp.load_state_dict(best_models[2])
 
         # Evaluate on test set
-        log.info("Evaluating on test set")
         test_loss, test_pcc, test_targets, test_predictions = self._evaluate(
             test_loader, drug_gcnn, gexpr_mlp, comb_mlp, criterion
         )
 
-        log.info(f"Test PCC: {test_pcc:.4f}")
+        log.info(f"Test PCC for {split_name}: {test_pcc:.4f}")
 
-        # Prepare results
-        results = {
+        result = {
+            "test_drug": test_drug,
+            "val_drug": val_drug,
             "pearson_correlation": float(test_pcc),
             "test_loss": float(test_loss),
             "best_val_pcc": float(best_val_pcc),
         }
 
-        # Save predictions if output path is configured
+        # Save predictions if configured
         if self.cfg.task.get("save_predictions", True):
-            self._save_predictions(test_metadata, test_predictions, test_targets, test_pcc)
+            self._save_predictions(test_metadata, test_predictions, test_targets, test_pcc, test_drug, val_drug)
 
-        return results
+        return result
 
-    def _save_predictions(self, metadata, predictions, targets, pcc):
+    def run(self) -> Dict[str, Any]:
+        """
+        Execute the drug response prediction evaluation.
+
+        Returns:
+            Dictionary containing evaluation metrics
+        """
+        log.info("Starting drug response prediction evaluation")
+
+        # Generate all splits to run
+        splits = generate_drug_splits(
+            drug_info_file=Path(hydra.utils.to_absolute_path(self.cfg.task.paths.drug_info)),
+            drug_proportion=self.cfg.task.get("drug_proportion"),
+            test_drug=self.cfg.task.get("test_drug"),
+            val_drug=self.cfg.task.get("val_drug"),
+            seed=self.cfg.task.get("seed", 42),
+        )
+
+        # Run each split
+        all_results = []
+        for test_drug, val_drug in splits:
+            result = self._run_single_split(test_drug, val_drug)
+            all_results.append(result)
+
+        # Aggregate results
+        if len(all_results) == 1:
+            return all_results[0]
+
+        # Multiple splits: compute summary statistics
+        pccs = [r["pearson_correlation"] for r in all_results]
+        summary = {
+            "mean_pearson_correlation": float(np.mean(pccs)),
+            "std_pearson_correlation": float(np.std(pccs)),
+            "min_pearson_correlation": float(np.min(pccs)),
+            "max_pearson_correlation": float(np.max(pccs)),
+            "n_splits": len(all_results),
+            "individual_results": all_results,
+        }
+
+        log.info(f"Completed {len(all_results)} splits")
+        log.info(f"Mean PCC: {summary['mean_pearson_correlation']:.4f} ± {summary['std_pearson_correlation']:.4f}")
+
+        return summary
+
+    def _save_predictions(
+        self,
+        metadata: List[Tuple[str, str, str]],
+        predictions: np.ndarray,
+        targets: np.ndarray,
+        pcc: float,
+        test_drug: str | None,
+        val_drug: str | None,
+    ) -> None:
         """Save predictions to CSV file."""
-        output_dir = Path(hydra.utils.to_absolute_path(self.cfg.task.get("output_dir", "./outputs")))
+        output_dir = Path(self.cfg.task.get("output_dir", "outputs"))
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        test_drug = self.cfg.task.get("test_drug", "cell_line")
-        output_file = output_dir / f"predictions_{test_drug}.csv"
+        split_name = test_drug if test_drug else "cell_line_split"
+        output_file = output_dir / f"predictions_{split_name}.csv"
 
         df = pd.DataFrame(
             {
@@ -373,11 +330,11 @@ class DrugResponsePredictionRunner:
         log.info(f"Predictions saved to {output_file}")
 
         # Save summary metrics
-        summary_file = output_dir / f"metrics_{test_drug}.csv"
+        summary_file = output_dir / f"metrics_{split_name}.csv"
         summary_df = pd.DataFrame(
             {
                 "test_drug": [test_drug],
-                "val_drug": [self.cfg.task.get("val_drug", "N/A")],
+                "val_drug": [val_drug],
                 "pearson_correlation": [pcc],
             }
         )

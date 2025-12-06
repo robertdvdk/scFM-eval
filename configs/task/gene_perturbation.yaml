@@ -1,31 +1,8 @@
 # @package _global_
 
 task:
-  name: batch_integration
+  name: gene_perturbation
 
-  # Paths to the data artifacts
-  # In production, these might be passed via CLI overrides
   paths:
-    ground_truth: data/neftel_ss2.h5ad
-    submissions:
-      - data/CancerGPT_epoch_15_neftel_ss2.h5ad
-      - data/CancerGPT_train_medium_compile_bf16_atheusdataset_7367148_neftel_ss2.h5ad
-
-  # Column names in the Ground Truth .obs dataframe
-  metadata:
-    batch_key: sample
-    label_key: subtype
-    embedding_key: CancerGPT
-
-  # Configuration for scib-metrics
-  metrics:
-    embedding_key: X_emb  # Where to store user embeddings in the merged object
-    n_neighbors: 15         # For kNN graph construction
-
-  dataset:
-    name: Neftel_brain_10X
-    n_hvg: None  # Number of highly variable genes to select
-
-  parameters:
-    seed: 42
-    n_replicates: 3
+    ground_truth: data/gene_perturbation/norman19/norman19_processed.h5ad
+    submission: data/gene_perturbation/norman19/submission.h5ad

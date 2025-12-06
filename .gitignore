@@ -30,3 +30,7 @@ data/*
 *.pt
 *.pth
 *.pkl
+*.csv
+
+*.wandb
+*.ckpt

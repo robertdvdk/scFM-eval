@@ -1,0 +1,29 @@
+# @package _global_
+
+task:
+  name: drug_response_prediction_new
+
+  paths:
+    drug_emb_path: data/drug_response_prediction_new/drug_embeddings.csv
+    dose_response_path: data/drug_response_prediction_new/dose_response_matrix.csv
+    metadata: data/drug_response_prediction_new/dose_response_subset.csv
+    submission: data/drug_response_prediction_new/CancerGPT.csv
+
+  # === NEW SPLIT CONFIGURATION ===
+  # Options: 'random', 'cold_drug', 'cold_cell', 'double_cold', 'loto'
+  split_mode: "loto"
+
+  # Args for specific modes:
+  test_drug: null         # For 'cold_drug' (specific)
+  drug_proportion: null   # For 'cold_drug' (random %) or 'double_cold'
+  test_tissue: "LUAD"       # For 'loto' (e.g., "LUAD", "BRCA")
+  # ===============================
+
+  # ... (Rest of your config remains the same: batch_size, gpu_id, etc.)
+  batch_size: 256
+  learning_rate: 0.003
+  epochs: 500
+  patience: 10
+  gpu_id: 0
+  num_workers: 4
+  seed: 42
