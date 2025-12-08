@@ -3,8 +3,7 @@ from omegaconf import DictConfig
 
 from tasks import (
     BatchIntegrationRunner,
-    DrugResponsePredictionRunnerNew,
-    DrugResponsePredictionRunnerOld,
+    DrugResponsePredictionRunner,
     GenePerturbationRunner,
 )
 
@@ -17,10 +16,8 @@ def main(cfg: DictConfig):
     # Dispatcher: Decide which runner to use based on the config
     if task_name == "batch_integration":
         runner = BatchIntegrationRunner(cfg)
-    elif task_name == "drug_response_prediction_old":
-        runner = DrugResponsePredictionRunnerOld(cfg)
-    elif task_name == "drug_response_prediction_new":
-        runner = DrugResponsePredictionRunnerNew(cfg)
+    elif task_name == "drug_response_prediction":
+        runner = DrugResponsePredictionRunner(cfg)
     elif task_name == "gene_perturbation":
         runner = GenePerturbationRunner(cfg)
     else:

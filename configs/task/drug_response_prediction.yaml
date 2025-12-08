@@ -1,13 +1,13 @@
 # @package _global_
 
 task:
-  name: drug_response_prediction_new
+  name: drug_response_prediction
 
   paths:
-    drug_emb_path: data/drug_response_prediction_new/drug_embeddings.csv
-    dose_response_path: data/drug_response_prediction_new/dose_response_matrix.csv
-    metadata: data/drug_response_prediction_new/dose_response_subset.csv
-    submission: data/drug_response_prediction_new/CancerGPT.csv
+    drug_emb_path: data/drug_response_prediction/drug_embeddings.csv
+    dose_response_path: data/drug_response_prediction/dose_response_matrix.csv
+    metadata: data/drug_response_prediction/dose_response_subset.csv
+    submission: data/drug_response_prediction/CancerGPT.csv
 
   # === NEW SPLIT CONFIGURATION ===
   # Options: 'random', 'cold_drug', 'cold_cell', 'double_cold', 'loto'

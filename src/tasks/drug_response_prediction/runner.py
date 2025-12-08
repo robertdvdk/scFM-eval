@@ -21,7 +21,7 @@ from .model import DualStreamModel
 log = logging.getLogger(__name__)
 
 
-class DrugResponsePredictionRunnerNew:
+class DrugResponsePredictionRunner:
     """Runner for drug response prediction evaluation task."""
 
     def __init__(self, cfg: DictConfig):

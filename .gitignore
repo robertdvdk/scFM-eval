@@ -34,3 +34,5 @@ data/*
 
 *.wandb
 *.ckpt
+
+notebooks/gdsc/*

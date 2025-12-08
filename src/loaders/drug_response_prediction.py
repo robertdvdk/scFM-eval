@@ -1,357 +1,317 @@
-import csv
 import logging
-import random
-from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Optional, Tuple
 
-import hickle as hkl
 import numpy as np
 import pandas as pd
 import torch
-from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
-from tqdm import tqdm
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Dataset
 
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger(__name__)
 
-
-def get_available_drugs(drug_info_file: Path) -> List[str]:
-    """
-    Get list of all available drug IDs.
-
-    Args:
-        drug_info_file: Path to drug metadata CSV
-
-    Returns:
-        List of drug ID strings
-    """
-    drug_info = pd.read_csv(drug_info_file)
-    drug_info = drug_info[drug_info["PubCHEM"].apply(lambda x: str(x).isdigit())]
-    return drug_info["PubCHEM"].astype(str).tolist()
-
-
-def generate_drug_splits(
-    drug_info_file: Path,
-    drug_proportion: float | None,
-    test_drug: str | None,
-    val_drug: str | None,
-    seed: int = 42,
-) -> List[Tuple[str | None, str | None]]:
-    """
-    Generate list of (test_drug, val_drug) pairs for evaluation.
-
-    Args:
-        drug_info_file: Path to drug metadata CSV
-        drug_proportion: Proportion of drugs to sample (0-1), or None for specific mode
-        test_drug: Specific test drug ID (used if drug_proportion is None)
-        val_drug: Specific val drug ID (used if drug_proportion is None)
-        seed: Random seed for reproducibility
-
-    Returns:
-        List of (test_drug, val_drug) tuples
-    """
-    if drug_proportion is None:
-        # Specific mode: return single pair
-        if test_drug is None:
-            return [(None, None)]
-        return [(test_drug, val_drug)]
-
-    # Proportion mode: sample drugs
-    all_drugs = get_available_drugs(drug_info_file)
-
-    rng = random.Random(seed)
-    n_test = max(1, int(len(all_drugs) * drug_proportion))
-    test_drugs = rng.sample(all_drugs, n_test)
-
-    splits = []
-    for t_drug in test_drugs:
-        available_val_drugs = [d for d in all_drugs if d != t_drug]
-        v_drug = rng.choice(available_val_drugs)
-        splits.append((t_drug, v_drug))
-
-    log.info(f"Generated {len(splits)} drug splits with proportion {drug_proportion}")
-    log.info(f"Val, test drug pairs: {splits}")
-
-    return splits
+# ==========================================
+# CONSTANTS: Tissue Lineages for Strict LOTO
+# ==========================================
+TISSUE_GROUPS = {
+    "LUNG": ["LUAD", "LUSC", "SCLC", "MESO", "NSCLC"],
+    "GI": ["COREAD", "STAD", "PAAD", "ESCA", "LIHC", "BLCA", "READ", "COAD"],
+    "BLOOD": ["LAML", "LCML", "DLBC", "ALL", "CLL", "MM", "NB", "Burkitt"],
+    "SKIN": ["SKCM"],
+    "CNS": ["GBM", "LGG", "MB", "NB"],
+    "GYN": ["BRCA", "OV", "UCEC", "CESC"],
+    "KIDNEY": ["KIRC", "KIRP", "KICH"],
+    "BONE": ["EWS", "OS"],
+}
 
 
-def load_drug_mapping(drug_info_file: Path) -> Dict[str, str]:
-    """Map drug IDs to PubChem IDs."""
-    with open(drug_info_file) as f:
-        reader = csv.reader(f)
-        return {row[0]: row[5] for row in reader if row[5].isdigit()}
+# ==========================================
+# 1. The Lazy Dataset
+# ==========================================
+class PharmacogenomicsDataset(Dataset):
+    def __init__(self, indices: List[Tuple[int, int, float]], cell_tensor: torch.Tensor, drug_tensor: torch.Tensor):
+        self.indices = indices
+        self.cell_tensor = cell_tensor
+        self.drug_tensor = drug_tensor
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        c_idx, d_idx, label = self.indices[idx]
+        cell_vec = self.cell_tensor[c_idx]
+        drug_vec = self.drug_tensor[d_idx]
+        # Return d_idx so we know which drug this is (useful for per-drug evaluation)
+        return cell_vec, drug_vec, torch.tensor(label, dtype=torch.float32), d_idx
 
 
-def load_cellline_mapping(cell_line_info_file: Path) -> Dict[str, str]:
-    """Map cell line IDs to cancer types."""
-    mapping = {}
-    with open(cell_line_info_file) as f:
-        next(f)  # Skip header
-        for line in f:
-            parts = line.strip().split("\t")
-            mapping[parts[1]] = parts[-1]  # cellline_id -> TCGA_label
-    return mapping
+# ==========================================
+# 2. The Data Manager
+# ==========================================
+class DataManager:
+    def __init__(
+        self,
+        cell_embedding_path: str,
+        drug_embedding_path: str,
+        response_matrix_path: str,
+        metadata_path: Optional[str] = None,
+    ):
+        log.info("Initializing DataManager...")
+
+        # A. Load Cell Embeddings
+        log.info(f"Loading Cell Embeddings: {cell_embedding_path}")
+        self.cell_df = pd.read_csv(cell_embedding_path, index_col=0)
+        self.cell_tensor = torch.tensor(self.cell_df.values, dtype=torch.float32)
+        self.cell_id_to_idx = {str(cid): i for i, cid in enumerate(self.cell_df.index)}
+
+        # B. Load Drug Embeddings
+        log.info(f"Loading Drug Embeddings: {drug_embedding_path}")
+        self.drug_df = pd.read_csv(drug_embedding_path)
+
+        # Robust ID handling
+        if "Drug_ID" in self.drug_df.columns:
+            self.drug_df.set_index("Drug_ID", inplace=True)
+        elif "DRUG_ID" in self.drug_df.columns:
+            self.drug_df.set_index("DRUG_ID", inplace=True)
+        else:
+            self.drug_df.set_index(self.drug_df.columns[0], inplace=True)
+
+        self.drug_tensor = torch.tensor(self.drug_df.values, dtype=torch.float32)
+        self.drug_id_to_idx = {str(did): i for i, did in enumerate(self.drug_df.index)}
+
+        # C. Load & Melt Response Matrix
+        log.info(f"Processing Response Matrix: {response_matrix_path}")
+        matrix_df = pd.read_csv(response_matrix_path)
+        id_col = matrix_df.columns[0]
+
+        self.response_df = matrix_df.melt(id_vars=id_col, var_name="cell_id", value_name="ic50")
+        self.response_df.rename(columns={id_col: "drug_id"}, inplace=True)
+
+        # Drop NaNs
+        initial_len = len(self.response_df)
+        self.response_df.dropna(subset=["ic50"], inplace=True)
+        log.info(f"   Valid Interactions: {len(self.response_df)} (Dropped {initial_len - len(self.response_df)} NaNs)")
+
+        # D. Load Metadata
+        self.cell_to_cancer = {}
+        if metadata_path:
+            log.info(f"Loading Metadata: {metadata_path}")
+            meta_df = pd.read_csv(metadata_path)
+            cell_col = next((c for c in ["COSMIC_ID", "cell_line_name", "cell_id"] if c in meta_df.columns), None)
+            type_col = next((c for c in ["TCGA_DESC", "cancer_type", "tissue"] if c in meta_df.columns), None)
+
+            if cell_col and type_col:
+                meta_unique = meta_df.drop_duplicates(subset=[cell_col])
+                self.cell_to_cancer = dict(zip(meta_unique[cell_col].astype(str), meta_unique[type_col], strict=True))
+                log.info(f"   Mapped {len(self.cell_to_cancer)} cell lines to cancer types.")
+            else:
+                log.warning("   Metadata columns not found. Stratification/LOTO will fail.")
+
+    def get_aligned_indices(self) -> pd.DataFrame:
+        self.response_df["drug_id"] = self.response_df["drug_id"].astype(str)
+        self.response_df["cell_id"] = self.response_df["cell_id"].astype(str)
+
+        valid_drugs = set(self.drug_id_to_idx.keys())
+        valid_cells = set(self.cell_id_to_idx.keys())
+
+        mask = (self.response_df["drug_id"].isin(valid_drugs)) & (self.response_df["cell_id"].isin(valid_cells))
+        df_clean = self.response_df[mask].copy()
+
+        df_clean["c_idx"] = df_clean["cell_id"].map(self.cell_id_to_idx)
+        df_clean["d_idx"] = df_clean["drug_id"].map(self.drug_id_to_idx)
+        df_clean["cancer_type"] = df_clean["cell_id"].map(self.cell_to_cancer)
+
+        # Hygiene
+        df_clean["cancer_type"] = df_clean["cancer_type"].fillna("Unknown")
+        df_clean["cancer_type"] = df_clean["cancer_type"].replace({"nan": "Unknown", "NA": "Unknown"})
+
+        return df_clean
+
+    def split_data(
+        self,
+        df: pd.DataFrame,
+        mode: str = "random",
+        test_drug: Optional[str] = None,
+        val_drug: Optional[str] = None,
+        holdout_tissue: Optional[str] = None,
+        drug_prop: Optional[float] = None,
+        val_split: float = 0.1,
+        test_split: float = 0.1,
+        seed: int = 42,
+    ):
+        log.info(f"Splitting data... Mode: {mode}")
+
+        # ---------------------------------------------------------
+        # Method 1: Random Split
+        # ---------------------------------------------------------
+        if mode == "random":
+            train_val_df, test_df = train_test_split(df, test_size=test_split, random_state=seed)
+            train_df, val_df = train_test_split(train_val_df, test_size=val_split, random_state=seed)
+
+        # ---------------------------------------------------------
+        # Method 2: Cold Drug Split (Corrected for Unseen Validation)
+        # ---------------------------------------------------------
+        elif mode == "cold_drug":
+            all_drugs = df["drug_id"].unique()
+
+            if test_drug:
+                # A. Specific Drug Case
+                # We expect val_drug to be passed, or we must pick one from the remaining?
+                # If val_drug is None, we need to pick a random one from remaining to ensure 'cold' val
+
+                log.info(f"   Specific Cold Drug. Test: {test_drug}")
+
+                if not val_drug:
+                    # Auto-select a validation drug if not provided to ensure cold validation
+                    remaining_candidates = [d for d in all_drugs if d != str(test_drug)]
+                    np.random.seed(seed)
+                    val_drug = np.random.choice(remaining_candidates)
+                    log.info(f"   No val_drug provided. Auto-selected {val_drug} as holdout validation drug.")
+
+                log.info(f"   Validation Drug: {val_drug}")
+
+                test_df = df[df["drug_id"] == str(test_drug)]
+                val_df = df[df["drug_id"] == str(val_drug)]
+
+                # Train on everything else
+                train_df = df[(df["drug_id"] != str(test_drug)) & (df["drug_id"] != str(val_drug))]
+
+            else:
+                # B. Random Proportion Case (FIXED)
+                prop = drug_prop if drug_prop else test_split
+
+                # 1. Split off Test Drugs
+                remaining_drugs, test_drugs = train_test_split(all_drugs, test_size=prop, random_state=seed)
+
+                # 2. Split off Validation Drugs from the REMAINING list
+                # This ensures Val drugs are disjoint from Train AND Test
+                train_drugs, val_drugs = train_test_split(remaining_drugs, test_size=val_split, random_state=seed)
+
+                log.info(
+                    f"   Cold Drug Proportion: {len(test_drugs)} Test Drugs, "
+                    f"{len(val_drugs)} Val Drugs, {len(train_drugs)} Train Drugs."
+                )
+
+                # 3. Create sets
+                train_df = df[df["drug_id"].isin(train_drugs)]
+                val_df = df[df["drug_id"].isin(val_drugs)]
+                test_df = df[df["drug_id"].isin(test_drugs)]
+
+        # ---------------------------------------------------------
+        # Method 3: Cold Cell Split
+        # ---------------------------------------------------------
+        elif mode == "cold_cell" or mode == "cancer_stratified":
+            try:
+                train_val_df, test_df = train_test_split(
+                    df, test_size=test_split, stratify=df["cancer_type"], random_state=seed
+                )
+                train_df, val_df = train_test_split(
+                    train_val_df, test_size=val_split, stratify=train_val_df["cancer_type"], random_state=seed
+                )
+            except ValueError:
+                log.warning("Stratification failed. Fallback to random.")
+                return self.split_data(df, mode="random", seed=seed)
+
+        # ---------------------------------------------------------
+        # Method 4: Double Cold Split
+        # ---------------------------------------------------------
+        elif mode == "double_cold":
+            d_prop = drug_prop if drug_prop else 0.1
+            all_drugs = df["drug_id"].unique()
+            train_drugs, test_drugs = train_test_split(all_drugs, test_size=d_prop, random_state=seed)
+
+            all_cells = df["cell_id"].unique()
+            train_cells, test_cells = train_test_split(all_cells, test_size=0.1, random_state=seed)
+
+            log.info(f"   Double Cold: {len(test_drugs)} drugs x {len(test_cells)} cells in Test Block.")
+
+            train_mask = df["drug_id"].isin(train_drugs) & df["cell_id"].isin(train_cells)
+            train_val_df = df[train_mask]
+
+            test_mask = df["drug_id"].isin(test_drugs) & df["cell_id"].isin(test_cells)
+            test_df = df[test_mask]
+
+            if len(test_df) == 0:
+                log.warning("Double Cold split result is empty! Increase drug_prop.")
+
+            # For Double Cold, standard validation on Seen Data is acceptable to tune the head,
+            # unless you want to burn another block of Cold Drugs/Cells for validation (expensive).
+            train_df, val_df = train_test_split(train_val_df, test_size=val_split, random_state=seed)
+
+        # ---------------------------------------------------------
+        # Method 5: Strict LOTO
+        # ---------------------------------------------------------
+        elif mode == "loto":
+            if not holdout_tissue:
+                raise ValueError("Config Error: 'loto' mode requires 'test_tissue' to be set.")
+
+            target_group = None
+            exclude_labels = [holdout_tissue]
+            for group_name, labels in TISSUE_GROUPS.items():
+                if holdout_tissue in labels:
+                    target_group = group_name
+                    exclude_labels = labels
+                    break
+
+            unsafe_labels = ["UNCLASSIFIED", "Unknown", "NA", "nan"]
+
+            log.info(f"   LOTO: Testing on '{holdout_tissue}'.")
+            if target_group:
+                log.info(f"   Strict LOTO: Excluding lineage {exclude_labels}")
+
+            test_df = df[df["cancer_type"] == holdout_tissue]
+
+            # Train on everything NOT in the excluded lineage
+            train_mask = (~df["cancer_type"].isin(exclude_labels)) & (~df["cancer_type"].isin(unsafe_labels))
+            train_val_df = df[train_mask]
+
+            if len(test_df) == 0:
+                available = df["cancer_type"].unique()
+                raise ValueError(f"Tissue '{holdout_tissue}' not found. Available: {available[:5]}...")
+
+            train_df, val_df = train_test_split(train_val_df, test_size=val_split, random_state=seed)
+        else:
+            raise ValueError(f"Unknown split mode: {mode}")
+
+        return train_df, val_df, test_df
 
 
-def load_drug_features(drug_feature_dir: Path) -> Dict[str, Tuple[np.ndarray, list, list]]:
-    """Load drug graph features from hickle files."""
-    features = {}
-    pubchem_ids = []
-
-    for file_path in drug_feature_dir.iterdir():
-        if file_path.suffix != ".hkl":
-            continue
-        pubchem_id = file_path.stem
-        pubchem_ids.append(pubchem_id)
-        features[pubchem_id] = hkl.load(file_path)
-
-    log.info(f"Loaded {len(features)} drug features")
-    assert len(pubchem_ids) == len(features), "Mismatch in drug feature counts"
-    return features
-
-
-def build_data_index(
-    experiment_df: pd.DataFrame,
-    gexpr_df: pd.DataFrame,
-    drugid2pubchemid: Dict[str, str],
-    cellline2cancertype: Dict[str, str],
-    drug_pubchem_ids: set,
-) -> List[Tuple[str, str, float, str]]:
-    """Build index of valid (cell_line, drug, IC50, cancer_type) tuples."""
-    data_idx = []
-
-    for drug_key in experiment_df.index:
-        drug_id = drug_key.split(":")[-1]
-        if drug_id not in drugid2pubchemid:
-            continue
-
-        pubchem_id = drugid2pubchemid[drug_id]
-        if pubchem_id not in drug_pubchem_ids:
-            continue
-
-        for cell_line in experiment_df.columns:
-            if cell_line not in gexpr_df.index or cell_line not in cellline2cancertype:
-                continue
-
-            ic50 = experiment_df.loc[drug_key, cell_line]
-            if not np.isnan(ic50):
-                data_idx.append((
-                    cell_line,
-                    pubchem_id,
-                    float(ic50),
-                    cellline2cancertype[cell_line],
-                ))
-
-    nb_celllines = len({item[0] for item in data_idx})
-    nb_drugs = len({item[1] for item in data_idx})
-    log.info(f"Generated {len(data_idx)} instances across {nb_celllines} cell lines and {nb_drugs} drugs")
-
-    return data_idx
-
-
-def create_graph_data(feat_mat: np.ndarray, adj_list: list) -> Data:
-    """Convert adjacency list to PyTorch Geometric Data object."""
-    edge_index = []
-    for node, neighbors in enumerate(adj_list):
-        edge_index.extend([[node, neighbor] for neighbor in neighbors])
-
-    edge_index = (
-        torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-        if edge_index
-        else torch.empty((2, 0), dtype=torch.long)
-    )
-
-    return Data(x=torch.tensor(feat_mat, dtype=torch.float32), edge_index=edge_index)
-
-
-def extract_features(
-    data_idx: List[Tuple[str, str, float, str]],
-    drug_features: Dict[str, Tuple],
-    gexpr_df: pd.DataFrame,
-) -> Tuple[List[Data], torch.Tensor, torch.Tensor, List[Tuple[str, str, str]]]:
-    """Extract drug graphs, gene expression, targets, and metadata."""
-    n_samples = len(data_idx)
-    n_genes = gexpr_df.shape[1]
-
-    drug_graphs = []
-    gexpr_data = torch.zeros((n_samples, n_genes), dtype=torch.float32)
-    targets = torch.zeros(n_samples, dtype=torch.float32)
-    metadata = []
-
-    for idx, (cell_line, pubchem_id, ic50, cancer_type) in enumerate(tqdm(data_idx, desc="Extracting features")):
-        feat_mat, adj_list, _ = drug_features[pubchem_id]
-        drug_graphs.append(create_graph_data(feat_mat, adj_list))
-        gexpr_data[idx] = torch.tensor(gexpr_df.loc[cell_line].values, dtype=torch.float32)
-        targets[idx] = ic50
-        metadata.append((cancer_type, cell_line, pubchem_id))
-
-    return drug_graphs, gexpr_data, targets, metadata
-
-
-def split_by_cancer_type(
-    data_idx: List[Tuple],
-    cancer_types: List[str],
-    train_ratio: float = 0.95,
-    seed: int | None = None,
-) -> Tuple[List[Tuple], List[Tuple]]:
-    """Split data maintaining cancer type distribution."""
-    if seed is not None:
-        random.seed(seed)
-
-    train_idx, test_idx = [], []
-    for cancer_type in cancer_types:
-        subtype_data = [item for item in data_idx if item[3] == cancer_type]
-        n_train = int(train_ratio * len(subtype_data))
-        train_sample = random.sample(subtype_data, n_train)
-        test_sample = [item for item in subtype_data if item not in train_sample]
-        train_idx.extend(train_sample)
-        test_idx.extend(test_sample)
-
-    return train_idx, test_idx
-
-
-def split_by_drug(
-    data_idx: List[Tuple],
-    held_out_drug: str,
-) -> Tuple[List[Tuple], List[Tuple]]:
-    """Split data by holding out a specific drug."""
-    train_idx = [item for item in data_idx if item[1] != held_out_drug]
-    test_idx = [item for item in data_idx if item[1] == held_out_drug]
-
-    if not test_idx:
-        raise ValueError(f"Held-out drug {held_out_drug} not found in dataset")
-
-    return train_idx, test_idx
-
-
-# TCGA cancer type labels
-TCGA_LABELS = [
-    "ALL",
-    "BLCA",
-    "BRCA",
-    "CESC",
-    "DLBC",
-    "LIHC",
-    "LUAD",
-    "ESCA",
-    "GBM",
-    "HNSC",
-    "KIRC",
-    "LAML",
-    "LCML",
-    "LGG",
-    "LUSC",
-    "MESO",
-    "MM",
-    "NB",
-    "OV",
-    "PAAD",
-    "SCLC",
-    "SKCM",
-    "STAD",
-    "THCA",
-    "COAD/READ",
-]
-
-
-def load_data(
-    drug_info_file: Path,
-    cell_line_info_file: Path,
-    drug_feature_dir: Path,
-    ground_truth_file: Path,
-    submission_file: Path,
-) -> Tuple[Dict, pd.DataFrame, List[Tuple]]:
-    """Load all data and build index of valid instances."""
-    log.info("Loading metadata and features")
-
-    drugid2pubchemid = load_drug_mapping(drug_info_file)
-    cellline2cancertype = load_cellline_mapping(cell_line_info_file)
-    drug_features = load_drug_features(drug_feature_dir)
-    gexpr_df = pd.read_csv(submission_file, index_col=0)
-    experiment_df = pd.read_csv(ground_truth_file, index_col=0)
-
-    # Filter to drugs with available PubChem mappings
-    valid_drugs = experiment_df.index[experiment_df.index.str.split(":").str[-1].isin(drugid2pubchemid.keys())]
-    experiment_df = experiment_df.loc[valid_drugs]
-
-    data_idx = build_data_index(
-        experiment_df,
-        gexpr_df,
-        drugid2pubchemid,
-        cellline2cancertype,
-        set(drug_features.keys()),
-    )
-
-    return drug_features, gexpr_df, data_idx
-
-
-def split_data(
-    data_idx: List[Tuple],
-    val_drug: str | None = None,
-    test_drug: str | None = None,
-) -> Tuple[List[Tuple], List[Tuple], List[Tuple]]:
-    """Split data into train/val/test sets."""
-    if test_drug is None and val_drug is None:
-        # Cell line split
-        log.info("Performing cell line split (90/5/5)")
-        train_idx, test_idx = split_by_cancer_type(data_idx, TCGA_LABELS, train_ratio=0.95)
-        train_idx, val_idx = split_by_cancer_type(train_idx, TCGA_LABELS, train_ratio=1 - 0.05 / 0.95)
-    else:
-        # Drug split
-        log.info(f"Performing drug split (test={test_drug}, val={val_drug})")
-        train_idx, test_idx = split_by_drug(data_idx, test_drug)
-        train_idx, val_idx = split_by_drug(train_idx, val_drug)
-
-    log.info(f"Split sizes - train: {len(train_idx)}, val: {len(val_idx)}, test: {len(test_idx)}")
-    return train_idx, val_idx, test_idx
-
-
-def create_dataloaders(
-    drug_info_file: Path,
-    cell_line_info_file: Path,
-    drug_feature_dir: Path,
-    ground_truth_file: Path,
-    submission_file: Path,
-    val_drug: str | None = None,
-    test_drug: str | None = None,
+# ==========================================
+# 3. Helper to Build Loaders
+# ==========================================
+def get_dataloaders(
+    cell_path: str,
+    drug_path: str,
+    matrix_path: str,
+    metadata_path: Optional[str],
+    split_mode: str = "cancer_stratified",
+    test_drug: Optional[str] = None,
+    val_drug: Optional[str] = None,
+    holdout_tissue: Optional[str] = None,
+    drug_prop: Optional[float] = None,
     batch_size: int = 32,
-    num_workers: int = 0,
-) -> Tuple[DataLoader, DataLoader, DataLoader, List[Tuple], int]:
-    """Create train/val/test dataloaders."""
-    # Load and split data
-    drug_features, gexpr_df, data_idx = load_data(
-        drug_info_file, cell_line_info_file, drug_feature_dir, ground_truth_file, submission_file
-    )
-    train_idx, val_idx, test_idx = split_data(data_idx, val_drug, test_drug)
+):
+    manager = DataManager(cell_path, drug_path, matrix_path, metadata_path)
+    df = manager.get_aligned_indices()
 
-    # Extract features for each split
-    log.info("Extracting training features")
-    X_drug_train, X_gexpr_train, y_train, _ = extract_features(train_idx, drug_features, gexpr_df)
-
-    log.info("Extracting validation features")
-    X_drug_val, X_gexpr_val, y_val, _ = extract_features(val_idx, drug_features, gexpr_df)
-
-    log.info("Extracting test features")
-    X_drug_test, X_gexpr_test, y_test, test_metadata = extract_features(test_idx, drug_features, gexpr_df)
-
-    # Create dataloaders
-    train_loader = DataLoader(
-        list(zip(X_drug_train, X_gexpr_train, y_train, strict=True)),
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-    )
-    val_loader = DataLoader(
-        list(zip(X_drug_val, X_gexpr_val, y_val, strict=True)),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-    )
-    test_loader = DataLoader(
-        list(zip(X_drug_test, X_gexpr_test, y_test, strict=True)),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
+    train_df, val_df, test_df = manager.split_data(
+        df, mode=split_mode, test_drug=test_drug, val_drug=val_drug, holdout_tissue=holdout_tissue, drug_prop=drug_prop
     )
 
-    return train_loader, val_loader, test_loader, test_metadata, gexpr_df.shape[-1]
+    log.info(f"Final Split Sizes: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
+
+    def to_list(d):
+        return list(zip(d["c_idx"], d["d_idx"], d["ic50"], strict=True))
+
+    train_ds = PharmacogenomicsDataset(to_list(train_df), manager.cell_tensor, manager.drug_tensor)
+    val_ds = PharmacogenomicsDataset(to_list(val_df), manager.cell_tensor, manager.drug_tensor)
+    test_ds = PharmacogenomicsDataset(to_list(test_df), manager.cell_tensor, manager.drug_tensor)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+
+    dims = {"cell_dim": manager.cell_tensor.shape[1], "drug_dim": manager.drug_tensor.shape[1]}
+
+    return train_loader, val_loader, test_loader, dims
