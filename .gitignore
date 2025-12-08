@@ -35,4 +35,4 @@ data/*
 *.wandb
 *.ckpt
 
-notebooks/gdsc/*
+temp/
