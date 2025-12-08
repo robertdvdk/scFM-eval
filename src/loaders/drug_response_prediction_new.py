@@ -1,6 +1,7 @@
 import logging
 from typing import List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
@@ -22,7 +23,6 @@ TISSUE_GROUPS = {
     "GYN": ["BRCA", "OV", "UCEC", "CESC"],
     "KIDNEY": ["KIRC", "KIRP", "KICH"],
     "BONE": ["EWS", "OS"],
-    # Any label not here is treated as an independent group
 }
 
 
@@ -32,7 +32,6 @@ TISSUE_GROUPS = {
 class PharmacogenomicsDataset(Dataset):
     def __init__(self, indices: List[Tuple[int, int, float]], cell_tensor: torch.Tensor, drug_tensor: torch.Tensor):
         self.indices = indices
-        # Store references to shared memory tensors
         self.cell_tensor = cell_tensor
         self.drug_tensor = drug_tensor
 
@@ -43,7 +42,7 @@ class PharmacogenomicsDataset(Dataset):
         c_idx, d_idx, label = self.indices[idx]
         cell_vec = self.cell_tensor[c_idx]
         drug_vec = self.drug_tensor[d_idx]
-        # Return d_idx so we know which drug this is
+        # Return d_idx so we know which drug this is (useful for per-drug evaluation)
         return cell_vec, drug_vec, torch.tensor(label, dtype=torch.float32), d_idx
 
 
@@ -94,17 +93,15 @@ class DataManager:
         self.response_df.dropna(subset=["ic50"], inplace=True)
         log.info(f"   Valid Interactions: {len(self.response_df)} (Dropped {initial_len - len(self.response_df)} NaNs)")
 
-        # D. Load Metadata (Stratification/LOTO)
+        # D. Load Metadata
         self.cell_to_cancer = {}
         if metadata_path:
             log.info(f"Loading Metadata: {metadata_path}")
             meta_df = pd.read_csv(metadata_path)
-            # Adjust column names dynamically
             cell_col = next((c for c in ["COSMIC_ID", "cell_line_name", "cell_id"] if c in meta_df.columns), None)
             type_col = next((c for c in ["TCGA_DESC", "cancer_type", "tissue"] if c in meta_df.columns), None)
 
             if cell_col and type_col:
-                # Ensure unique mapping
                 meta_unique = meta_df.drop_duplicates(subset=[cell_col])
                 self.cell_to_cancer = dict(zip(meta_unique[cell_col].astype(str), meta_unique[type_col], strict=True))
                 log.info(f"   Mapped {len(self.cell_to_cancer)} cell lines to cancer types.")
@@ -112,8 +109,6 @@ class DataManager:
                 log.warning("   Metadata columns not found. Stratification/LOTO will fail.")
 
     def get_aligned_indices(self) -> pd.DataFrame:
-        """Create master index table with integer pointers."""
-        # Ensure strings for matching
         self.response_df["drug_id"] = self.response_df["drug_id"].astype(str)
         self.response_df["cell_id"] = self.response_df["cell_id"].astype(str)
 
@@ -121,18 +116,13 @@ class DataManager:
         valid_cells = set(self.cell_id_to_idx.keys())
 
         mask = (self.response_df["drug_id"].isin(valid_drugs)) & (self.response_df["cell_id"].isin(valid_cells))
-
         df_clean = self.response_df[mask].copy()
 
-        # Map to pointers
         df_clean["c_idx"] = df_clean["cell_id"].map(self.cell_id_to_idx)
         df_clean["d_idx"] = df_clean["drug_id"].map(self.drug_id_to_idx)
-
-        # Map Cancer Types & Handle Missing/NA
         df_clean["cancer_type"] = df_clean["cell_id"].map(self.cell_to_cancer)
 
-        # HYGIENE: Treat 'nan', 'NA' as 'Unknown' so we don't lose data,
-        # but can exclude them from LOTO training.
+        # Hygiene
         df_clean["cancer_type"] = df_clean["cancer_type"].fillna("Unknown")
         df_clean["cancer_type"] = df_clean["cancer_type"].replace({"nan": "Unknown", "NA": "Unknown"})
 
@@ -142,7 +132,8 @@ class DataManager:
         self,
         df: pd.DataFrame,
         mode: str = "random",
-        holdout_drug: Optional[str] = None,
+        test_drug: Optional[str] = None,
+        val_drug: Optional[str] = None,
         holdout_tissue: Optional[str] = None,
         drug_prop: Optional[float] = None,
         val_split: float = 0.1,
@@ -152,36 +143,63 @@ class DataManager:
         log.info(f"Splitting data... Mode: {mode}")
 
         # ---------------------------------------------------------
-        # Method 1: Random Split (Transductive)
+        # Method 1: Random Split
         # ---------------------------------------------------------
         if mode == "random":
             train_val_df, test_df = train_test_split(df, test_size=test_split, random_state=seed)
             train_df, val_df = train_test_split(train_val_df, test_size=val_split, random_state=seed)
 
         # ---------------------------------------------------------
-        # Method 2: Cold Drug Split (Inductive Chemistry)
+        # Method 2: Cold Drug Split (Corrected for Unseen Validation)
         # ---------------------------------------------------------
         elif mode == "cold_drug":
-            if holdout_drug:
-                # Specific Drug Case
-                log.info(f"   Holding out specific drug: {holdout_drug}")
-                test_df = df[df["drug_id"] == str(holdout_drug)]
-                train_val_df = df[df["drug_id"] != str(holdout_drug)]
-            else:
-                # Random Proportion Case
-                prop = drug_prop if drug_prop else test_split
-                log.info(f"   Holding out {prop:.1%} of drugs randomly.")
-                all_drugs = df["drug_id"].unique()
-                train_drugs, test_drugs = train_test_split(all_drugs, test_size=prop, random_state=seed)
+            all_drugs = df["drug_id"].unique()
 
-                train_val_df = df[df["drug_id"].isin(train_drugs)]
+            if test_drug:
+                # A. Specific Drug Case
+                # We expect val_drug to be passed, or we must pick one from the remaining?
+                # If val_drug is None, we need to pick a random one from remaining to ensure 'cold' val
+
+                log.info(f"   Specific Cold Drug. Test: {test_drug}")
+
+                if not val_drug:
+                    # Auto-select a validation drug if not provided to ensure cold validation
+                    remaining_candidates = [d for d in all_drugs if d != str(test_drug)]
+                    np.random.seed(seed)
+                    val_drug = np.random.choice(remaining_candidates)
+                    log.info(f"   No val_drug provided. Auto-selected {val_drug} as holdout validation drug.")
+
+                log.info(f"   Validation Drug: {val_drug}")
+
+                test_df = df[df["drug_id"] == str(test_drug)]
+                val_df = df[df["drug_id"] == str(val_drug)]
+
+                # Train on everything else
+                train_df = df[(df["drug_id"] != str(test_drug)) & (df["drug_id"] != str(val_drug))]
+
+            else:
+                # B. Random Proportion Case (FIXED)
+                prop = drug_prop if drug_prop else test_split
+
+                # 1. Split off Test Drugs
+                remaining_drugs, test_drugs = train_test_split(all_drugs, test_size=prop, random_state=seed)
+
+                # 2. Split off Validation Drugs from the REMAINING list
+                # This ensures Val drugs are disjoint from Train AND Test
+                train_drugs, val_drugs = train_test_split(remaining_drugs, test_size=val_split, random_state=seed)
+
+                log.info(
+                    f"   Cold Drug Proportion: {len(test_drugs)} Test Drugs, "
+                    f"{len(val_drugs)} Val Drugs, {len(train_drugs)} Train Drugs."
+                )
+
+                # 3. Create sets
+                train_df = df[df["drug_id"].isin(train_drugs)]
+                val_df = df[df["drug_id"].isin(val_drugs)]
                 test_df = df[df["drug_id"].isin(test_drugs)]
 
-            # Validation on SEEN drugs (standard practice for tuning)
-            train_df, val_df = train_test_split(train_val_df, test_size=val_split, random_state=seed)
-
         # ---------------------------------------------------------
-        # Method 3: Cold Cell Split (Inductive Biology)
+        # Method 3: Cold Cell Split
         # ---------------------------------------------------------
         elif mode == "cold_cell" or mode == "cancer_stratified":
             try:
@@ -192,46 +210,42 @@ class DataManager:
                     train_val_df, test_size=val_split, stratify=train_val_df["cancer_type"], random_state=seed
                 )
             except ValueError:
-                log.warning("Stratification failed (rare classes?). Fallback to random.")
+                log.warning("Stratification failed. Fallback to random.")
                 return self.split_data(df, mode="random", seed=seed)
 
         # ---------------------------------------------------------
-        # Method 4: Double Cold Split (Zero-Shot)
+        # Method 4: Double Cold Split
         # ---------------------------------------------------------
         elif mode == "double_cold":
-            # 1. Define Cold Drugs
             d_prop = drug_prop if drug_prop else 0.1
             all_drugs = df["drug_id"].unique()
             train_drugs, test_drugs = train_test_split(all_drugs, test_size=d_prop, random_state=seed)
 
-            # 2. Define Cold Cells
             all_cells = df["cell_id"].unique()
             train_cells, test_cells = train_test_split(all_cells, test_size=0.1, random_state=seed)
 
             log.info(f"   Double Cold: {len(test_drugs)} drugs x {len(test_cells)} cells in Test Block.")
 
-            # 3. Create Quadrants
-            # Train = Seen Drugs AND Seen Cells
             train_mask = df["drug_id"].isin(train_drugs) & df["cell_id"].isin(train_cells)
             train_val_df = df[train_mask]
 
-            # Test = Unseen Drugs AND Unseen Cells
             test_mask = df["drug_id"].isin(test_drugs) & df["cell_id"].isin(test_cells)
             test_df = df[test_mask]
 
             if len(test_df) == 0:
                 log.warning("Double Cold split result is empty! Increase drug_prop.")
 
+            # For Double Cold, standard validation on Seen Data is acceptable to tune the head,
+            # unless you want to burn another block of Cold Drugs/Cells for validation (expensive).
             train_df, val_df = train_test_split(train_val_df, test_size=val_split, random_state=seed)
 
         # ---------------------------------------------------------
-        # Method 5: Strict LOTO (OOD Biology)
+        # Method 5: Strict LOTO
         # ---------------------------------------------------------
         elif mode == "loto":
             if not holdout_tissue:
                 raise ValueError("Config Error: 'loto' mode requires 'test_tissue' to be set.")
 
-            # 1. Identify Lineage Group to prevent leakage
             target_group = None
             exclude_labels = [holdout_tissue]
             for group_name, labels in TISSUE_GROUPS.items():
@@ -240,19 +254,15 @@ class DataManager:
                     exclude_labels = labels
                     break
 
-            # 2. Define "Ambiguous" labels that are unsafe for LOTO training
-            # We assume 'Other' is safe (rare specific cancers), but 'UNCLASSIFIED' is risky.
             unsafe_labels = ["UNCLASSIFIED", "Unknown", "NA", "nan"]
 
             log.info(f"   LOTO: Testing on '{holdout_tissue}'.")
             if target_group:
-                log.info(f"   Strict LOTO: Excluding entire '{target_group}' lineage: {exclude_labels}")
-            log.info(f"   Hygiene: Excluding unsafe labels from train: {unsafe_labels}")
+                log.info(f"   Strict LOTO: Excluding lineage {exclude_labels}")
 
-            # 3. Test Set (Strictly the target)
             test_df = df[df["cancer_type"] == holdout_tissue]
 
-            # 4. Train Set (Everything else MINUS Lineage MINUS Unsafe)
+            # Train on everything NOT in the excluded lineage
             train_mask = (~df["cancer_type"].isin(exclude_labels)) & (~df["cancer_type"].isin(unsafe_labels))
             train_val_df = df[train_mask]
 
@@ -260,7 +270,6 @@ class DataManager:
                 available = df["cancer_type"].unique()
                 raise ValueError(f"Tissue '{holdout_tissue}' not found. Available: {available[:5]}...")
 
-            # Validation from Train distribution (Seen Tissues)
             train_df, val_df = train_test_split(train_val_df, test_size=val_split, random_state=seed)
         else:
             raise ValueError(f"Unknown split mode: {mode}")
@@ -277,34 +286,28 @@ def get_dataloaders(
     matrix_path: str,
     metadata_path: Optional[str],
     split_mode: str = "cancer_stratified",
-    holdout_drug: Optional[str] = None,
+    test_drug: Optional[str] = None,
+    val_drug: Optional[str] = None,
     holdout_tissue: Optional[str] = None,
     drug_prop: Optional[float] = None,
     batch_size: int = 32,
 ):
-    # 1. Init Manager
     manager = DataManager(cell_path, drug_path, matrix_path, metadata_path)
-
-    # 2. Get Indices
     df = manager.get_aligned_indices()
 
-    # 3. Perform Split
     train_df, val_df, test_df = manager.split_data(
-        df, mode=split_mode, holdout_drug=holdout_drug, holdout_tissue=holdout_tissue, drug_prop=drug_prop
+        df, mode=split_mode, test_drug=test_drug, val_drug=val_drug, holdout_tissue=holdout_tissue, drug_prop=drug_prop
     )
 
     log.info(f"Final Split Sizes: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
 
-    # 4. Convert to list
     def to_list(d):
         return list(zip(d["c_idx"], d["d_idx"], d["ic50"], strict=True))
 
-    # 5. Build Datasets
     train_ds = PharmacogenomicsDataset(to_list(train_df), manager.cell_tensor, manager.drug_tensor)
     val_ds = PharmacogenomicsDataset(to_list(val_df), manager.cell_tensor, manager.drug_tensor)
     test_ds = PharmacogenomicsDataset(to_list(test_df), manager.cell_tensor, manager.drug_tensor)
 
-    # 6. Build Loaders
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)

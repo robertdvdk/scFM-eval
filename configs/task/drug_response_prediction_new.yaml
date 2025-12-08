@@ -11,12 +11,13 @@ task:
 
   # === NEW SPLIT CONFIGURATION ===
   # Options: 'random', 'cold_drug', 'cold_cell', 'double_cold', 'loto'
-  split_mode: "loto"
+  split_mode: "cold_drug"
 
   # Args for specific modes:
   test_drug: null         # For 'cold_drug' (specific)
+  val_drug: null         # For 'cold_drug' (specific)
   drug_proportion: null   # For 'cold_drug' (random %) or 'double_cold'
-  test_tissue: "LUAD"       # For 'loto' (e.g., "LUAD", "BRCA")
+  test_tissue: null       # For 'loto' (e.g., "LUAD", "BRCA")
   # ===============================
 
   # ... (Rest of your config remains the same: batch_size, gpu_id, etc.)

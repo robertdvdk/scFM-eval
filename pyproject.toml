@@ -35,6 +35,8 @@ dev = [
 [tool.ruff]
 target-version = "py313"
 line-length = 120
+extend-include = ["*.ipynb"]
+preview = true
 
 [tool.ruff.lint]
 # Enable Pyflakes (F), pycodestyle (E, W), isort (I), and bugbear (B)

@@ -6,7 +6,7 @@ class DualStreamModel(nn.Module):
     def __init__(self, cell_dim: int, drug_dim: int, latent_dim: int = 256):
         super().__init__()
 
-        # Stream 1: Cell (CancerGPT)
+        # Stream 1: Process cell embeddings
         self.cell_encoder = nn.Sequential(
             nn.Linear(cell_dim, 512),
             nn.BatchNorm1d(512),
@@ -16,7 +16,7 @@ class DualStreamModel(nn.Module):
             nn.ReLU(),
         )
 
-        # Stream 2: Drug (Embeddings)
+        # Stream 2: Process drug embeddings
         self.drug_encoder = nn.Sequential(
             nn.Linear(drug_dim, 512),
             nn.BatchNorm1d(512),

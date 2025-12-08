@@ -317,26 +317,22 @@ class DrugResponsePredictionRunnerOld:
         split_name = test_drug if test_drug else "cell_line_split"
         output_file = output_dir / f"predictions_{split_name}.csv"
 
-        df = pd.DataFrame(
-            {
-                "cancer_type": [m[0] for m in metadata],
-                "cell_line": [m[1] for m in metadata],
-                "pubchem_cid": [m[2] for m in metadata],
-                "prediction": predictions.flatten(),
-                "ground_truth": targets.flatten(),
-            }
-        )
+        df = pd.DataFrame({
+            "cancer_type": [m[0] for m in metadata],
+            "cell_line": [m[1] for m in metadata],
+            "pubchem_cid": [m[2] for m in metadata],
+            "prediction": predictions.flatten(),
+            "ground_truth": targets.flatten(),
+        })
         df.to_csv(output_file, index=False)
         log.info(f"Predictions saved to {output_file}")
 
         # Save summary metrics
         summary_file = output_dir / f"metrics_{split_name}.csv"
-        summary_df = pd.DataFrame(
-            {
-                "test_drug": [test_drug],
-                "val_drug": [val_drug],
-                "pearson_correlation": [pcc],
-            }
-        )
+        summary_df = pd.DataFrame({
+            "test_drug": [test_drug],
+            "val_drug": [val_drug],
+            "pearson_correlation": [pcc],
+        })
         summary_df.to_csv(summary_file, index=False)
         log.info(f"Metrics saved to {summary_file}")

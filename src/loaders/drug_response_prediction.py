@@ -135,14 +135,12 @@ def build_data_index(
 
             ic50 = experiment_df.loc[drug_key, cell_line]
             if not np.isnan(ic50):
-                data_idx.append(
-                    (
-                        cell_line,
-                        pubchem_id,
-                        float(ic50),
-                        cellline2cancertype[cell_line],
-                    )
-                )
+                data_idx.append((
+                    cell_line,
+                    pubchem_id,
+                    float(ic50),
+                    cellline2cancertype[cell_line],
+                ))
 
     nb_celllines = len({item[0] for item in data_idx})
     nb_drugs = len({item[1] for item in data_idx})

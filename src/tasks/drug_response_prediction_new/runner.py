@@ -106,7 +106,6 @@ class DrugResponsePredictionRunnerNew:
         all_drug_ids = []
 
         with torch.no_grad():
-            # Unpack the new d_idx
             for cell_vec, drug_vec, target, d_idx in data_loader:
                 cell_vec = cell_vec.to(self.device)
                 drug_vec = drug_vec.to(self.device)
@@ -118,13 +117,13 @@ class DrugResponsePredictionRunnerNew:
 
                 all_preds.extend(out.cpu().numpy().flatten())
                 all_targets.extend(target.cpu().numpy().flatten())
-                all_drug_ids.extend(d_idx.numpy().flatten())
+                all_drug_ids.extend(d_idx.cpu().numpy().flatten())
 
-        # --- THE FIX: Per-Drug Correlation ---
+        # Calculate per-drug Pearson correlation
         df_res = pd.DataFrame({"pred": all_preds, "target": all_targets, "drug_idx": all_drug_ids})
 
         correlations = []
-        # Group by Drug and calculate Pearson for that specific drug
+        # Group by drug and calculate Pearson for that specific drug
         for _, group in df_res.groupby("drug_idx"):
             if len(group) > 5:  # Only calculate if enough samples
                 if group["pred"].std() < 1e-9 or group["target"].std() < 1e-9:
@@ -137,27 +136,20 @@ class DrugResponsePredictionRunnerNew:
         # Also calc global for comparison
         global_r, _ = pearsonr(all_targets, all_preds)
 
-        # LOG BOTH
-        log.info(f"   Global Pearson: {global_r:.4f} (Likely Inflated)")
-        log.info(f"   Mean Per-Drug Pearson: {mean_per_drug_r:.4f} (Real Metric)")
+        return total_loss / len(data_loader), mean_per_drug_r, np.array(all_targets), np.array(all_preds), global_r
 
-        return total_loss / len(data_loader), mean_per_drug_r, np.array(all_targets), np.array(all_preds)
-
-    # =========================================================================
-    # CORRECTION IS HERE: The method MUST accept test_drug and val_drug args
-    # =========================================================================
     def _run_single_split(self, test_drug: str | None, val_drug: str | None) -> Dict[str, Any]:
         # 1. Determine Logic based on Args vs Config
         # If test_drug is passed (from the loop), it overrides everything for Cold Drug mode
         if test_drug:
             split_mode = "cold_drug"
-            split_name = f"drug_{test_drug}"
-            current_holdout_drug = test_drug
+            split_name = f"drug_{test_drug}_val_{val_drug}"
         else:
             # Fallback to config settings (e.g. LOTO, Random, Stratified)
             split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
             split_name = f"split_{split_mode}"
-            current_holdout_drug = None
+            test_drug = None
+            val_drug = None
 
         # Pull other config params
         test_tissue = self.cfg.task.get("test_tissue")
@@ -175,7 +167,8 @@ class DrugResponsePredictionRunnerNew:
             else None,
             split_mode=split_mode,
             # Pass the specific holdouts
-            holdout_drug=current_holdout_drug,
+            test_drug=test_drug,
+            val_drug=val_drug,
             holdout_tissue=test_tissue,
             drug_prop=drug_prop,
             batch_size=self.cfg.task.get("batch_size", 256),
@@ -189,23 +182,30 @@ class DrugResponsePredictionRunnerNew:
         # 4. Train Loop
         epochs = self.cfg.task.get("epochs", 500)
         patience = self.cfg.task.get("patience", 10)
-        best_val_pcc = -float("inf")
+        best_val_per_drug_pcc = -float("inf")
+        best_val_global_pcc = -float("inf")
         best_model_state = None
         patience_counter = 0
 
         for epoch in range(epochs):
             train_loss = self._train_epoch(train_loader, model, optimizer, criterion)
-            val_loss, val_pcc, _, _ = self._evaluate(val_loader, model, criterion)
+            val_loss, val_per_drug_pcc, _, _, val_global_pcc = self._evaluate(val_loader, model, criterion)
 
-            if val_pcc > best_val_pcc:
-                best_val_pcc = val_pcc
+            if val_per_drug_pcc > best_val_per_drug_pcc:
+                best_val_per_drug_pcc = val_per_drug_pcc
+                best_val_global_pcc = val_global_pcc
                 best_model_state = model.state_dict().copy()
                 patience_counter = 0
             else:
                 patience_counter += 1
 
             if (epoch + 1) % 10 == 0:
-                log.info(f"Epoch {epoch + 1} | Train Loss: {train_loss:.4f} | Val PCC: {val_pcc:.4f}")
+                log.info(
+                    f"Epoch {epoch + 1} | "
+                    f"Train Loss: {train_loss:.4f} | "
+                    f"Val per drug PCC: {val_per_drug_pcc:.4f} | "
+                    f"Val naive PCC: {val_global_pcc:.4f}"
+                )
 
             if patience_counter >= patience:
                 log.info(f"Early stopping at epoch {epoch + 1}")
@@ -215,20 +215,23 @@ class DrugResponsePredictionRunnerNew:
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
 
-        test_loss, test_pcc, test_targets, test_preds = self._evaluate(test_loader, model, criterion)
-        log.info(f"Test PCC for {split_name}: {test_pcc:.4f}")
+        test_loss, test_per_drug_pcc, test_targets, test_preds, test_global_pcc = self._evaluate(
+            test_loader, model, criterion
+        )
+        log.info(f"Test PCC for {split_name}: {test_per_drug_pcc:.4f}")
 
         if self.cfg.task.get("save_predictions", True):
-            self._save_predictions(test_preds, test_targets, test_pcc, split_name)
-
+            self._save_predictions(test_preds, test_targets, test_per_drug_pcc, split_name, test_global_pcc)
         return {
             "test_drug": test_drug,
-            "pearson_correlation": float(test_pcc),
             "test_loss": float(test_loss),
-            "best_val_pcc": float(best_val_pcc),
+            "test_per_drug_pcc": float(test_per_drug_pcc),
+            "best_val_per_drug_pcc": float(best_val_per_drug_pcc),
+            "test_global_pcc": float(test_global_pcc),
+            "best_val_global_pcc": float(best_val_global_pcc),
         }
 
-    def _save_predictions(self, preds, targets, pcc, split_name):
+    def _save_predictions(self, preds, targets, per_drug_pcc, split_name, global_pcc):
         output_dir = Path(self.cfg.task.get("output_dir", "outputs"))
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -236,11 +239,12 @@ class DrugResponsePredictionRunnerNew:
         df.to_csv(output_dir / f"pred_{split_name}.csv", index=False)
 
         with open(output_dir / "metrics.csv", "a") as f:
-            f.write(f"{split_name},{pcc}\n")
+            f.write(f"{split_name},{per_drug_pcc},{global_pcc}\n")
 
     def run(self) -> Dict[str, Any]:
         drug_prop = self.cfg.task.get("drug_proportion")
         test_drug = self.cfg.task.get("test_drug")
+        val_drug = self.cfg.task.get("val_drug")
 
         # Load drug list for iteration logic
         drug_path = hydra.utils.to_absolute_path(self.cfg.task.paths.drug_emb_path)
@@ -263,8 +267,8 @@ class DrugResponsePredictionRunnerNew:
             log.info(f"Proportion Mode: Running {len(splits)} cold-drug splits.")
 
         elif test_drug is not None:
-            splits = [(str(test_drug), None)]
-            log.info(f"Specific Mode: Testing on drug {test_drug}")
+            splits = [(str(test_drug), str(val_drug))]
+            log.info(f"Specific Mode: Testing on drug {test_drug}, validating on drug {val_drug}.")
 
         else:
             # If no drug logic is set, we run once.
@@ -274,10 +278,8 @@ class DrugResponsePredictionRunnerNew:
 
         results = []
         for t_drug, v_drug in splits:
-            # THIS CALL CAUSED YOUR ERROR.
-            # The definition above now accepts these arguments.
             res = self._run_single_split(test_drug=t_drug, val_drug=v_drug)
             results.append(res)
 
-        pccs = [r["pearson_correlation"] for r in results]
+        pccs = [r["test_per_drug_pcc"] for r in results]
         return {"mean_pcc": float(np.mean(pccs)), "std_pcc": float(np.std(pccs)), "results": results}
