@@ -2,14 +2,15 @@
 
 task:
   name: batch_integration
+  model_name: CancerGPT
+  run_group: ${task.data.ground_truth}
 
   # Paths to the data artifacts
   # In production, these might be passed via CLI overrides
-  paths:
-    ground_truth: data/batch_integration/neftel_ss2.h5ad
-    submissions:
-      - data/batch_integration/CancerGPT_epoch_15_neftel_ss2.h5ad
-      - data/batch_integration/CancerGPT_train_medium_compile_bf16_atheusdataset_7367148_neftel_ss2.h5ad
+  data:
+    data_root: data/batch_integration/  # Where all the .h5ad files are stored
+    ground_truth: neftel_ss2  # Which .h5ad file to use as ground truth
+    submissions: CancerGPT_epoch_15_neftel_ss2  # Which .h5ad file(s) to evaluate
 
   # Column names in the Ground Truth .obs dataframe
   metadata:
@@ -22,9 +23,9 @@ task:
     embedding_key: X_emb  # Where to store user embeddings in the merged object
     n_neighbors: 15         # For kNN graph construction
 
-  dataset:
-    name: Neftel_brain_10X
-    n_hvg: None  # Number of highly variable genes to select
+  # dataset:
+  #   name: Neftel_brain_10X
+  #   n_hvg: null  # Number of highly variable genes to select
 
   parameters:
     seed: 42

@@ -2,7 +2,7 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import hydra
 import numpy as np
@@ -10,12 +10,13 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from scipy.stats import pearsonr
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 
-from loaders import get_dataloaders
+from loaders import get_drp_dataloaders
 
-# Import local modules
 from .model import DualStreamModel
 
 log = logging.getLogger(__name__)
@@ -31,14 +32,12 @@ class DrugResponsePredictionRunner:
         self._seed_everything()
 
     def _validate_config(self):
-        """Validate required configuration parameters."""
         required_paths = [
-            ("task", "paths", "drug_emb_path"),
-            ("task", "paths", "dose_response_path"),
-            ("task", "paths", "metadata"),
-            ("task", "paths", "submission"),
+            ("task", "data", "drug_emb_path"),
+            ("task", "data", "dose_response_path"),
+            ("task", "data", "metadata"),
+            ("task", "data", "submission"),
         ]
-
         for path_parts in required_paths:
             try:
                 value = self.cfg
@@ -47,10 +46,10 @@ class DrugResponsePredictionRunner:
                 if value is None:
                     if path_parts[-1] == "metadata":
                         continue
-                    raise ValueError(f"Missing required config: {'.'.join(path_parts)}")
+                    raise ValueError(f"Missing config: {'.'.join(path_parts)}")
             except (KeyError, AttributeError) as err:
                 if path_parts[-1] != "metadata":
-                    raise ValueError(f"Missing required config: {'.'.join(path_parts)}") from err
+                    raise ValueError(f"Missing config: {'.'.join(path_parts)}") from err
 
     def _set_device(self):
         gpu_id = self.cfg.task.get("gpu_id", -1)
@@ -62,7 +61,7 @@ class DrugResponsePredictionRunner:
             log.info(f"Using GPU: {gpu_id}")
 
     def _seed_everything(self):
-        seed = self.cfg.task.get("seed", 42)
+        seed = self.cfg.task.get("model_seed", 42)
         random.seed(seed)
         os.environ["PYTHONHASHSEED"] = str(seed)
         np.random.seed(seed)
@@ -75,13 +74,13 @@ class DrugResponsePredictionRunner:
 
     def _create_model(self, cell_dim: int, drug_dim: int):
         model = DualStreamModel(cell_dim=cell_dim, drug_dim=drug_dim).to(self.device)
+        model = torch.compile(model)
         log.info(f"Model initialized with Cell Dim: {cell_dim}, Drug Dim: {drug_dim}")
         return model
 
     def _train_epoch(self, train_loader, model, optimizer, criterion):
         model.train()
         running_loss = 0.0
-
         for cell_vec, drug_vec, target, _ in train_loader:
             cell_vec = cell_vec.to(self.device)
             drug_vec = drug_vec.to(self.device)
@@ -93,14 +92,11 @@ class DrugResponsePredictionRunner:
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-
         return running_loss / len(train_loader)
 
     def _evaluate(self, data_loader, model, criterion):
         model.eval()
         total_loss = 0.0
-
-        # Store arrays to group later
         all_preds = []
         all_targets = []
         all_drug_ids = []
@@ -117,83 +113,98 @@ class DrugResponsePredictionRunner:
 
                 all_preds.extend(out.cpu().numpy().flatten())
                 all_targets.extend(target.cpu().numpy().flatten())
-                all_drug_ids.extend(d_idx.cpu().numpy().flatten())
+                all_drug_ids.extend(d_idx.cpu().numpy().flatten())  # Ensure CPU for numpy
 
-        # Calculate per-drug Pearson correlation
+        # Calculate Per-Drug Pearson
         df_res = pd.DataFrame({"pred": all_preds, "target": all_targets, "drug_idx": all_drug_ids})
-
         correlations = []
-        # Group by drug and calculate Pearson for that specific drug
         for _, group in df_res.groupby("drug_idx"):
-            if len(group) > 5:  # Only calculate if enough samples
+            if len(group) > 5:
                 if group["pred"].std() < 1e-9 or group["target"].std() < 1e-9:
-                    continue  # Skip constant outputs
+                    continue
                 r, _ = pearsonr(group["pred"], group["target"])
                 correlations.append(r)
 
         mean_per_drug_r = np.mean(correlations) if correlations else 0.0
 
-        # Also calc global for comparison
-        global_r, _ = pearsonr(all_targets, all_preds)
+        # Calculate Global Pearson
+        if len(all_targets) > 1 and np.std(np.array(all_preds)) > 1e-9:
+            global_r, _ = pearsonr(all_targets, all_preds)
+        else:
+            global_r = 0.0
 
         return total_loss / len(data_loader), mean_per_drug_r, np.array(all_targets), np.array(all_preds), global_r
 
-    def _run_single_split(self, test_drug: str | None, val_drug: str | None) -> Dict[str, Any]:
-        # 1. Determine Logic based on Args vs Config
-        # If test_drug is passed (from the loop), it overrides everything for Cold Drug mode
-        if test_drug:
-            split_mode = "cold_drug"
-            split_name = f"drug_{test_drug}_val_{val_drug}"
-        else:
-            # Fallback to config settings (e.g. LOTO, Random, Stratified)
-            split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
-            split_name = f"split_{split_mode}"
-            test_drug = None
-            val_drug = None
+    def _run_single_split(
+        self,
+        test_drugs: List[str] | None = None,
+        val_drugs: List[str] | None = None,
+        test_cells: List[str] | None = None,
+        val_cells: List[str] | None = None,
+    ) -> Dict[str, Any]:
 
-        # Pull other config params
+        # Determine Mode for Logging
+        split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
+        # Overrides if specific args are present
+        if test_drugs:
+            split_mode = "cold_drug"
+        if test_cells and not test_drugs:
+            split_mode = "cold_cell"
+        if test_drugs and test_cells:
+            split_mode = "double_cold"
+
+        split_name = f"split_{split_mode}"
+
+        # Pull Configs
         test_tissue = self.cfg.task.get("test_tissue")
         drug_prop = self.cfg.task.get("drug_proportion")
 
         log.info(f"Running split: {split_name} (Mode: {split_mode})")
 
-        # 2. Initialize Loader
-        train_loader, val_loader, test_loader, dims = get_dataloaders(
-            cell_path=hydra.utils.to_absolute_path(self.cfg.task.paths.submission),
-            drug_path=hydra.utils.to_absolute_path(self.cfg.task.paths.drug_emb_path),
-            matrix_path=hydra.utils.to_absolute_path(self.cfg.task.paths.dose_response_path),
-            metadata_path=hydra.utils.to_absolute_path(self.cfg.task.paths.metadata)
-            if self.cfg.task.paths.metadata
+        # Initialize Loader
+        train_loader, val_loader, test_loader, dims = get_drp_dataloaders(
+            cell_path=hydra.utils.to_absolute_path(self.cfg.task.data.data_root + self.cfg.task.data.submission),
+            drug_path=hydra.utils.to_absolute_path(self.cfg.task.data.data_root + self.cfg.task.data.drug_emb_path),
+            matrix_path=hydra.utils.to_absolute_path(
+                self.cfg.task.data.data_root + self.cfg.task.data.dose_response_path
+            ),
+            metadata_path=hydra.utils.to_absolute_path(self.cfg.task.data.data_root + self.cfg.task.data.metadata)
+            if self.cfg.task.data.metadata
             else None,
             split_mode=split_mode,
-            # Pass the specific holdouts
-            test_drug=test_drug,
-            val_drug=val_drug,
+            test_drugs=test_drugs,
+            val_drugs=val_drugs,
+            test_cells=test_cells,
+            val_cells=val_cells,
             holdout_tissue=test_tissue,
             drug_prop=drug_prop,
             batch_size=self.cfg.task.get("batch_size", 256),
+            num_workers=self.cfg.task.get("num_workers", 4),
+            data_seed=self.cfg.task.get("data_seed", 42),
         )
 
-        # 3. Model & Opt
         model = self._create_model(dims["cell_dim"], dims["drug_dim"])
         optimizer = optim.Adam(model.parameters(), lr=self.cfg.task.get("learning_rate", 0.003))
         criterion = nn.MSELoss()
+        eval_criterion = nn.L1Loss()
 
-        # 4. Train Loop
         epochs = self.cfg.task.get("epochs", 500)
         patience = self.cfg.task.get("patience", 10)
-        best_val_per_drug_pcc = -float("inf")
-        best_val_global_pcc = -float("inf")
+        best_val_metric = -float("inf")
         best_model_state = None
         patience_counter = 0
 
         for epoch in range(epochs):
             train_loss = self._train_epoch(train_loader, model, optimizer, criterion)
-            val_loss, val_per_drug_pcc, _, _, val_global_pcc = self._evaluate(val_loader, model, criterion)
+            # Optimize for Per-Drug PCC if possible, otherwise Global PCC
+            val_mae, val_per_drug, _, _, val_global = self._evaluate(val_loader, model, eval_criterion)
 
-            if val_per_drug_pcc > best_val_per_drug_pcc:
-                best_val_per_drug_pcc = val_per_drug_pcc
-                best_val_global_pcc = val_global_pcc
+            # Choose metric to optimize based on mode.
+            # For cold drug, per-drug is key. For cold cell, global is often used but per-drug is stricter.
+            current_metric = val_per_drug if split_mode == "cold_drug" else val_global
+
+            if current_metric > best_val_metric:
+                best_val_metric = current_metric
                 best_model_state = model.state_dict().copy()
                 patience_counter = 0
             else:
@@ -201,85 +212,152 @@ class DrugResponsePredictionRunner:
 
             if (epoch + 1) % 10 == 0:
                 log.info(
-                    f"Epoch {epoch + 1} | "
-                    f"Train Loss: {train_loss:.4f} | "
-                    f"Val per drug PCC: {val_per_drug_pcc:.4f} | "
-                    f"Val naive PCC: {val_global_pcc:.4f}"
+                    f"Epoch {epoch + 1} | Train Loss: {train_loss:.4f} | Val MAE: {val_mae:.4f} |"
+                    f" Val Per-Drug PCC: {val_per_drug:.4f} | Val Global PCC: {val_global:.4f}"
                 )
 
             if patience_counter >= patience:
-                log.info(f"Early stopping at epoch {epoch + 1}")
+                log.info(
+                    f"Early stopping at epoch {epoch + 1} | Loss: {train_loss:.4f} | Val MAE: {val_mae:.4f} |"
+                    f" Val Per-Drug PCC: {val_per_drug:.4f} | Val Global PCC: {val_global:.4f}"
+                )
                 break
 
-        # 5. Test
-        if best_model_state is not None:
+        if best_model_state:
             model.load_state_dict(best_model_state)
 
-        test_loss, test_per_drug_pcc, test_targets, test_preds, test_global_pcc = self._evaluate(
-            test_loader, model, criterion
-        )
-        log.info(f"Test PCC for {split_name}: {test_per_drug_pcc:.4f}")
+        test_mae, test_pd_pcc, test_t, test_p, test_g_pcc = self._evaluate(test_loader, model, eval_criterion)
+        log.info(f"Test MAE: {test_mae:.3f} | Test Per-Drug PCC: {test_pd_pcc:.4f} | Test Global PCC: {test_g_pcc:.4f}")
 
         if self.cfg.task.get("save_predictions", True):
-            self._save_predictions(test_preds, test_targets, test_per_drug_pcc, split_name, test_global_pcc)
+            self._save_predictions(test_p, test_t, test_pd_pcc, split_name, test_g_pcc)
+
         return {
-            "test_drug": test_drug,
-            "test_loss": float(test_loss),
-            "test_per_drug_pcc": float(test_per_drug_pcc),
-            "best_val_per_drug_pcc": float(best_val_per_drug_pcc),
-            "test_global_pcc": float(test_global_pcc),
-            "best_val_global_pcc": float(best_val_global_pcc),
+            "test_mae": float(test_mae),
+            "test_per_drug_pcc": float(test_pd_pcc),
+            "test_global_pcc": float(test_g_pcc),
         }
 
     def _save_predictions(self, preds, targets, per_drug_pcc, split_name, global_pcc):
-        output_dir = Path(self.cfg.task.get("output_dir", "outputs"))
+        # Logic: Check if Hydra is managing this run.
+        # If yes, grab the real output dir. If no (debug mode), fallback to config.
+        if HydraConfig.initialized():
+            output_dir = Path(HydraConfig.get().runtime.output_dir)
+        else:
+            output_dir = Path(self.cfg.task.get("output_dir", "outputs"))
         output_dir.mkdir(parents=True, exist_ok=True)
-
         df = pd.DataFrame({"prediction": preds.flatten(), "ground_truth": targets.flatten()})
-        df.to_csv(output_dir / f"pred_{split_name}.csv", index=False)
 
+        # Use random suffix to avoid overwriting in loops if needed, or structured names
+        counter = 0
+        for file in output_dir.iterdir():
+            if file.name.startswith(f"pred_{split_name}"):
+                counter += 1
+        save_name = f"pred_{split_name}_{counter}.csv"
+        df.to_csv(output_dir / save_name, index=False)
         with open(output_dir / "metrics.csv", "a") as f:
             f.write(f"{split_name},{per_drug_pcc},{global_pcc}\n")
 
     def run(self) -> Dict[str, Any]:
-        drug_prop = self.cfg.task.get("drug_proportion")
-        test_drug = self.cfg.task.get("test_drug")
-        val_drug = self.cfg.task.get("val_drug")
 
-        # Load drug list for iteration logic
-        drug_path = hydra.utils.to_absolute_path(self.cfg.task.paths.drug_emb_path)
+        # Config
+        split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
+        k_fold = self.cfg.task.get("k_fold", 0)
+
+        # Load Indices
+        drug_path = hydra.utils.to_absolute_path(self.cfg.task.data.data_root + self.cfg.task.data.drug_emb_path)
+        meta_path = hydra.utils.to_absolute_path(self.cfg.task.data.data_root + self.cfg.task.data.metadata)
+
+        # Drugs
         drug_df = pd.read_csv(drug_path)
-
         if "Drug_ID" in drug_df.columns:
-            available_drugs = drug_df["Drug_ID"].astype(str).unique().tolist()
+            drugs = drug_df["Drug_ID"].astype(str).unique().tolist()
         elif "DRUG_ID" in drug_df.columns:
-            available_drugs = drug_df["DRUG_ID"].astype(str).unique().tolist()
+            drugs = drug_df["DRUG_ID"].astype(str).unique().tolist()
         else:
-            available_drugs = drug_df.iloc[:, 0].astype(str).unique().tolist()
+            drugs = drug_df.iloc[:, 0].astype(str).unique().tolist()
+
+        # Cells (for Stratified CV)
+        meta_df = pd.read_csv(meta_path)
+        cells = meta_df["COSMIC_ID"].astype(str).unique()
+        cell_map = dict(zip(meta_df["COSMIC_ID"].astype(str), meta_df["TCGA_DESC"], strict=True))
+        cell_labels = [cell_map.get(c, "Unknown") for c in cells]
 
         splits = []
 
-        # Logic to generate list of (drug, val_drug) tuples to iterate over
-        if drug_prop is not None:
-            num_test = max(1, int(len(available_drugs) * drug_prop))
-            test_drugs_list = random.sample(available_drugs, num_test)
-            splits = [(d, None) for d in test_drugs_list]
-            log.info(f"Proportion Mode: Running {len(splits)} cold-drug splits.")
+        # --- GENERATE SPLITS ---
+        if k_fold > 1:
+            log.info(f"Generating {k_fold}-Fold Splits for {split_mode}")
 
-        elif test_drug is not None:
-            splits = [(str(test_drug), str(val_drug))]
-            log.info(f"Specific Mode: Testing on drug {test_drug}, validating on drug {val_drug}.")
+            if split_mode == "cold_drug":
+                kf = KFold(n_splits=k_fold, shuffle=True, random_state=self.cfg.task.get("data_seed", 42))
+                d_arr = np.array(drugs)
+                for tr_idx, te_idx in kf.split(d_arr):
+                    t_drugs = d_arr[te_idx].tolist()
+                    # Split Train into Train/Val
+                    tr_sub, val_sub = train_test_split(
+                        tr_idx, test_size=0.1, random_state=self.cfg.task.get("data_seed", 42)
+                    )
+                    v_drugs = d_arr[val_sub].tolist()
+                    splits.append({"test_drugs": t_drugs, "val_drugs": v_drugs})
+
+            elif split_mode in ["cold_cell", "cancer_stratified"]:
+                skf = StratifiedKFold(n_splits=k_fold, shuffle=True, random_state=self.cfg.task.get("data_seed", 42))
+                c_arr = np.array(cells)
+                l_arr = np.array(cell_labels)
+                for tr_idx, te_idx in skf.split(c_arr, l_arr):
+                    t_cells = c_arr[te_idx].tolist()
+                    tr_sub, val_sub = train_test_split(
+                        tr_idx, test_size=0.1, stratify=l_arr[tr_idx], random_state=self.cfg.task.get("data_seed", 42)
+                    )
+                    v_cells = c_arr[val_sub].tolist()
+                    splits.append({"test_cells": t_cells, "val_cells": v_cells})
+
+            elif split_mode == "double_cold":
+                kf_d = KFold(n_splits=k_fold, shuffle=True, random_state=self.cfg.task.get("data_seed", 42))
+                skf_c = StratifiedKFold(n_splits=k_fold, shuffle=True, random_state=self.cfg.task.get("data_seed", 42))
+                d_arr = np.array(drugs)
+                c_arr = np.array(cells)
+                l_arr = np.array(cell_labels)
+
+                d_splits = list(kf_d.split(d_arr))
+                c_splits = list(skf_c.split(c_arr, l_arr))
+
+                for i in range(k_fold):
+                    _, d_te = d_splits[i]
+                    _, c_te = c_splits[i]
+                    splits.append({"test_drugs": d_arr[d_te].tolist(), "test_cells": c_arr[c_te].tolist()})
 
         else:
-            # If no drug logic is set, we run once.
-            # _run_single_split will fallback to config (e.g. LOTO or Stratified Cell)
-            splits = [(None, None)]
-            log.info("Cell/LOTO Mode: Running single split configuration.")
+            # Single Split (Legacy/Simple/LOTO)
+            # Arguments handled by loader defaults or config fallback
+            splits.append({})  # Empty dict uses config defaults or specific 'test_drug' arg logic in _run_single_split
 
+        # --- EXECUTE ---
         results = []
-        for t_drug, v_drug in splits:
-            res = self._run_single_split(test_drug=t_drug, val_drug=v_drug)
+        for i, kwargs in enumerate(splits):
+            log.info(f"--- Running Split {i + 1}/{len(splits)} ---")
+            res = self._run_single_split(**kwargs)
             results.append(res)
 
-        pccs = [r["test_per_drug_pcc"] for r in results]
-        return {"mean_pcc": float(np.mean(pccs)), "std_pcc": float(np.std(pccs)), "results": results}
+        # Summarize
+        pd_mae = [r["test_mae"] for r in results]
+        pd_per_pccs = [r["test_per_drug_pcc"] for r in results]
+        pd_global_pccs = [r["test_global_pcc"] for r in results]
+
+        log.info("=== Drug Response Prediction Summary ===")
+        log.info(f"Mean MAE across splits: {np.mean(pd_mae):.4f}")
+        log.info(f"Std Dev MAE across splits: {np.std(pd_mae):.4f}")
+        log.info(f"Mean Per-Drug PCC across splits: {np.mean(pd_per_pccs):.4f}")
+        log.info(f"Std Dev Per-Drug PCC across splits: {np.std(pd_per_pccs):.4f}")
+        log.info(f"Mean Global PCC across splits: {np.mean(pd_global_pccs):.4f}")
+        log.info(f"Std Dev Global PCC across splits: {np.std(pd_global_pccs):.4f}")
+        return {
+            "mean_mae": float(np.mean(pd_mae)),
+            "std_mae": float(np.std(pd_mae)),
+            "mean_per_drug_pcc": float(np.mean(pd_per_pccs)),
+            "std_per_drug_pcc": float(np.std(pd_per_pccs)),
+            "mean_global_pcc": float(np.mean(pd_global_pccs)),
+            "std_global_pcc": float(np.std(pd_global_pccs)),
+            "all_results": results,
+        }

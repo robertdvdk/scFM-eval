@@ -3,27 +3,62 @@
 task:
   name: drug_response_prediction
 
-  paths:
-    drug_emb_path: data/drug_response_prediction/drug_embeddings.csv
-    dose_response_path: data/drug_response_prediction/dose_response_matrix.csv
-    metadata: data/drug_response_prediction/dose_response_subset.csv
-    submission: data/drug_response_prediction/CancerGPT.csv
+  model_name: CancerGPT
+  run_group: ${task.split_mode}
 
+  data:
+    data_root: data/drug_response_prediction/
+    drug_emb_path: ground_truth/drug_embeddings.csv
+    dose_response_path: ground_truth/dose_response_matrix.csv
+    metadata: ground_truth/dose_response_subset.csv
+    submission: submission/cancergpt_baseline_embeddings.csv
 
-  # Options: 'random', 'cold_drug', 'cold_cell', 'double_cold', 'loto'
-  split_mode: "cold_drug"
+  # ==========================================
+  # EVALUATION STRATEGY
+  # ==========================================
+  # Modes:
+  #   1. 'random'          (Transductive: Random shuffle)
+  #   2. 'cold_drug'       (Inductive Chemistry: Unseen Drugs)
+  #   3. 'cold_cell'       (Inductive Biology: Unseen Cells)
+  #   4. 'double_cold'     (Zero-Shot: Unseen Drug x Unseen Cell)
+  #   5. 'loto'            (OOD: Leave-One-Tissue-Out)
+  split_mode: "loto"
 
-  # Args for specific modes:
-  test_drug: null         # For 'cold_drug' (specific)
-  val_drug: null         # For 'cold_drug' (specific)
-  drug_proportion: null   # For 'cold_drug' (random %) or 'double_cold'
-  test_tissue: null       # For 'loto' (e.g., "LUAD", "BRCA")
-  # ===============================
+  # ==========================================
+  # ROBUSTNESS (K-Fold Cross Validation)
+  # ==========================================
+  # If k_fold > 1, the code runs K-Fold CV.
+  # This AUTOMATICALLY handles splitting and overrides 'test_drug'/'drug_proportion'.
+  # Supported for: 'cold_drug', 'cold_cell', 'double_cold'.
+  # Ignored for: 'loto' (uses biology), 'random'.
+  k_fold: 0 # Set to 0 or 1 to disable
 
+  # ==========================================
+  # SINGLE SPLIT ARGUMENTS (Used if k_fold <= 1)
+  # ==========================================
+
+  # For 'cold_drug' mode:
+  test_drug: null         # Optional: Specific Drug ID (e.g. "1003") to hold out
+  val_drug: null          # Optional: Specific Drug ID to use for validation
+  drug_proportion: null   # Optional: Float (e.g. 0.1) to hold out 10% random drugs
+
+  # For 'loto' mode:
+  test_tissue: "LAML"       # Required: TCGA Label (e.g. "LUAD", "BRCA", "LAML")
+
+  # ==========================================
+  # TRAINING HYPERPARAMETERS
+  # ==========================================
   batch_size: 256
   learning_rate: 0.003
   epochs: 500
   patience: 10
+
+  # System
   gpu_id: 0
   num_workers: 4
-  seed: 42
+  data_seed: 42
+  model_seed: 42
+  fully_deterministic: False
+
+  # Outputs
+  save_predictions: true

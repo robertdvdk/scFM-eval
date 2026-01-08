@@ -2,5 +2,6 @@ defaults:
   - task: ???  # 1. Load configs/task/batch_integration.yaml
   - _self_                   # 2. Then apply any overrides from this file (if any)
 
-# You can still define global variables here if you want
-seed: 42
+hydra:
+  run:
+    dir: outputs/${task.name}/${task.run_group}/${task.model_name}/${now:%Y-%m-%d_%H-%M-%S}

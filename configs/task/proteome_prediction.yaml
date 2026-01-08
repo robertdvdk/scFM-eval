@@ -1,0 +1,18 @@
+# @package _global_
+
+task:
+  name: proteome_prediction
+
+  model_name: CancerGPT
+  run_group: test
+
+  data:
+    data_root: data/proteome_prediction/
+    rna_path: ground_truth/GSM5008737_RNA_finetune_withcelltype
+    prot_path: ground_truth/proteome_theirs
+    submission: submission/my_init_4gpu_lrx2_prot_embeddings
+
+  data_seed: 42
+  model_seed: 42
+  batch_size: 32
+  num_workers: 4

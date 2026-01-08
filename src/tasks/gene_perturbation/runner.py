@@ -1,3 +1,6 @@
+# Diversity by Design: Addressing Mode Collapse Improves scRNA-seq Perturbation Modeling on Well-Calibrated Metrics
+# by Mejia et al., 2025
+
 import logging
 import pickle
 from pathlib import Path

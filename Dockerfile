@@ -23,7 +23,7 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 RUN apt-get update && \
-    apt-get install -y git wget && \
+    apt-get install -y git wget build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtual environment from the builder

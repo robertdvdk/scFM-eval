@@ -1,11 +1,7 @@
 import hydra
 from omegaconf import DictConfig
 
-from tasks import (
-    BatchIntegrationRunner,
-    DrugResponsePredictionRunner,
-    GenePerturbationRunner,
-)
+from tasks import BatchIntegrationRunner, DrugResponsePredictionRunner, GenePerturbationRunner, ProteomePredictionRunner
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -20,6 +16,8 @@ def main(cfg: DictConfig):
         runner = DrugResponsePredictionRunner(cfg)
     elif task_name == "gene_perturbation":
         runner = GenePerturbationRunner(cfg)
+    elif task_name == "proteome_prediction":
+        runner = ProteomePredictionRunner(cfg)
     else:
         raise ValueError(f"Unknown task: {task_name}")
 

@@ -3,6 +3,9 @@
 task:
   name: gene_perturbation
 
+  model_name: --
+  run_group: Norman19
+
   paths:
     ground_truth: data/gene_perturbation/norman19/norman19_processed.h5ad
-    submission: data/gene_perturbation/norman19/submission.h5ad
+    submission: data/gene_perturbation/norman19/submission/${task.model_name}.h5ad
