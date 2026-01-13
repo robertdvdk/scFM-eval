@@ -36,3 +36,6 @@ data/*
 *.ckpt
 
 temp/
+*.gz
+*.txt
+*.xlsx

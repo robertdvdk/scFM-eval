@@ -8,9 +8,12 @@ task:
 
   data:
     data_root: data/proteome_prediction/
-    rna_path: ground_truth/GSM5008737_RNA_finetune_withcelltype
-    prot_path: ground_truth/proteome_theirs
-    submission: submission/my_init_4gpu_lrx2_prot_embeddings
+    rna_train_path: ground_truth/pbmc/PBMC_trainset_preprocessed
+    rna_test_path: ground_truth/pbmc/PBMC_testset_preprocessed
+    prot_train_path: ground_truth/pbmc/prot_train
+    prot_test_path: ground_truth/pbmc/prot_test
+    submission_train: [submission/my_init_4gpu_lrx2_PBMC_trainset]
+    submission_test: [submission/my_init_4gpu_lrx2_PBMC_testset]
 
   data_seed: 42
   model_seed: 42

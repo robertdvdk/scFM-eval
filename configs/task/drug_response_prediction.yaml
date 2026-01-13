@@ -8,7 +8,7 @@ task:
 
   data:
     data_root: data/drug_response_prediction/
-    drug_emb_path: ground_truth/drug_embeddings.csv
+    drug_emb_path: ground_truth/drug_graph/
     dose_response_path: ground_truth/dose_response_matrix.csv
     metadata: ground_truth/dose_response_subset.csv
     submission: submission/cancergpt_baseline_embeddings.csv
@@ -22,7 +22,7 @@ task:
   #   3. 'cold_cell'       (Inductive Biology: Unseen Cells)
   #   4. 'double_cold'     (Zero-Shot: Unseen Drug x Unseen Cell)
   #   5. 'loto'            (OOD: Leave-One-Tissue-Out)
-  split_mode: "loto"
+  split_mode: "random"
 
   # ==========================================
   # ROBUSTNESS (K-Fold Cross Validation)

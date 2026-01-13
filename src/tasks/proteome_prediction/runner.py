@@ -40,7 +40,7 @@ class ProteomePredictionRunner:
         optimizer = torch.optim.Adam(model.parameters())
         loss_fn = torch.nn.MSELoss()
 
-        for epoch in range(20):
+        for epoch in range(5):
             model.train()
             running_train_loss, n_train_samples = 0.0, 0
             for X, y in train_loader:
@@ -53,7 +53,7 @@ class ProteomePredictionRunner:
                 loss.backward()
                 optimizer.step()
 
-            if epoch % 10 == 0:
+            if epoch % 1 == 0:
                 model.eval()
                 running_val_loss, n_val_samples = 0.0, 0
                 with torch.no_grad():

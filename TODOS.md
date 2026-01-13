@@ -1,3 +1,11 @@
-LOOK AT EMBEDDINGS -> COLLAPSE?
-1. Embed gene perturbation and evaluate to see whether it works.
-2. Write
+Tasks to implement:
+- [ ] Batch integration
+    - [ ] Finetuned batch integration
+    - [ ] Data cleaning pipeline in this repo
+    - [ ] Extra datasets
+        - [ ] Kim lung
+        - [ ] Ji skin
+- [ ] Proteome perturbation
+    - [ ] Perturbed proteome prediction
+- [ ] Gene perturbation
+- [ ] Drug reponse prediction

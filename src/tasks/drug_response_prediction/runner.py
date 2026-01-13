@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 import random
@@ -72,10 +73,12 @@ class DrugResponsePredictionRunner:
             torch.backends.cudnn.benchmark = False
         log.info(f"Random seed set to {seed}")
 
-    def _create_model(self, cell_dim: int, drug_dim: int):
-        model = DualStreamModel(cell_dim=cell_dim, drug_dim=drug_dim).to(self.device)
-        model = torch.compile(model)
-        log.info(f"Model initialized with Cell Dim: {cell_dim}, Drug Dim: {drug_dim}")
+    def _create_model(self, cell_dim: int, drug_dim: int, is_graph: bool):
+        # Pass is_graph to model
+        model = DualStreamModel(cell_dim=cell_dim, drug_dim=drug_dim, is_graph=is_graph).to(self.device)
+        # compile might need backend='eager' for PyG depending on PT version
+        # model = torch.compile(model)
+        log.info(f"Model initialized. Cell Dim: {cell_dim}, Drug Dim: {drug_dim}, Graph Mode: {is_graph}")
         return model
 
     def _train_epoch(self, train_loader, model, optimizer, criterion):
@@ -83,8 +86,10 @@ class DrugResponsePredictionRunner:
         running_loss = 0.0
         for cell_vec, drug_vec, target, _ in train_loader:
             cell_vec = cell_vec.to(self.device)
-            drug_vec = drug_vec.to(self.device)
             target = target.to(self.device)
+
+            # drug_vec is either Tensor or PyG Batch
+            drug_vec = drug_vec.to(self.device)
 
             optimizer.zero_grad()
             out = model(cell_vec, drug_vec)
@@ -113,14 +118,14 @@ class DrugResponsePredictionRunner:
 
                 all_preds.extend(out.cpu().numpy().flatten())
                 all_targets.extend(target.cpu().numpy().flatten())
-                all_drug_ids.extend(d_idx.cpu().numpy().flatten())  # Ensure CPU for numpy
+                all_drug_ids.extend(d_idx.cpu().numpy().flatten())
 
         # Calculate Per-Drug Pearson
         df_res = pd.DataFrame({"pred": all_preds, "target": all_targets, "drug_idx": all_drug_ids})
         correlations = []
         for _, group in df_res.groupby("drug_idx"):
-            if len(group) > 5:
-                if group["pred"].std() < 1e-9 or group["target"].std() < 1e-9:
+            if len(group) > 5:  # TODO remove?
+                if group["pred"].std() < 1e-9 or group["target"].std() < 1e-9:  # TODO remove?
                     continue
                 r, _ = pearsonr(group["pred"], group["target"])
                 correlations.append(r)
@@ -145,13 +150,12 @@ class DrugResponsePredictionRunner:
 
         # Determine Mode for Logging
         split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
-        # Overrides if specific args are present
-        if test_drugs:
-            split_mode = "cold_drug"
-        if test_cells and not test_drugs:
-            split_mode = "cold_cell"
-        if test_drugs and test_cells:
-            split_mode = "double_cold"
+        # if test_drugs:
+        #     split_mode = "cold_drug"
+        # if test_cells and not test_drugs:
+        #     split_mode = "cold_cell"
+        # if test_drugs and test_cells:
+        #     split_mode = "double_cold"
 
         split_name = f"split_{split_mode}"
 
@@ -183,7 +187,7 @@ class DrugResponsePredictionRunner:
             data_seed=self.cfg.task.get("data_seed", 42),
         )
 
-        model = self._create_model(dims["cell_dim"], dims["drug_dim"])
+        model = self._create_model(dims["cell_dim"], dims["drug_dim"], dims["is_graph"])
         optimizer = optim.Adam(model.parameters(), lr=self.cfg.task.get("learning_rate", 0.003))
         criterion = nn.MSELoss()
         eval_criterion = nn.L1Loss()
@@ -196,11 +200,8 @@ class DrugResponsePredictionRunner:
 
         for epoch in range(epochs):
             train_loss = self._train_epoch(train_loader, model, optimizer, criterion)
-            # Optimize for Per-Drug PCC if possible, otherwise Global PCC
             val_mae, val_per_drug, _, _, val_global = self._evaluate(val_loader, model, eval_criterion)
 
-            # Choose metric to optimize based on mode.
-            # For cold drug, per-drug is key. For cold cell, global is often used but per-drug is stricter.
             current_metric = val_per_drug if split_mode == "cold_drug" else val_global
 
             if current_metric > best_val_metric:
@@ -239,8 +240,6 @@ class DrugResponsePredictionRunner:
         }
 
     def _save_predictions(self, preds, targets, per_drug_pcc, split_name, global_pcc):
-        # Logic: Check if Hydra is managing this run.
-        # If yes, grab the real output dir. If no (debug mode), fallback to config.
         if HydraConfig.initialized():
             output_dir = Path(HydraConfig.get().runtime.output_dir)
         else:
@@ -248,7 +247,6 @@ class DrugResponsePredictionRunner:
         output_dir.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame({"prediction": preds.flatten(), "ground_truth": targets.flatten()})
 
-        # Use random suffix to avoid overwriting in loops if needed, or structured names
         counter = 0
         for file in output_dir.iterdir():
             if file.name.startswith(f"pred_{split_name}"):
@@ -259,7 +257,6 @@ class DrugResponsePredictionRunner:
             f.write(f"{split_name},{per_drug_pcc},{global_pcc}\n")
 
     def run(self) -> Dict[str, Any]:
-
         # Config
         split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
         k_fold = self.cfg.task.get("k_fold", 0)
@@ -268,14 +265,25 @@ class DrugResponsePredictionRunner:
         drug_path = hydra.utils.to_absolute_path(self.cfg.task.data.data_root + self.cfg.task.data.drug_emb_path)
         meta_path = hydra.utils.to_absolute_path(self.cfg.task.data.data_root + self.cfg.task.data.metadata)
 
-        # Drugs
-        drug_df = pd.read_csv(drug_path)
-        if "Drug_ID" in drug_df.columns:
-            drugs = drug_df["Drug_ID"].astype(str).unique().tolist()
-        elif "DRUG_ID" in drug_df.columns:
-            drugs = drug_df["DRUG_ID"].astype(str).unique().tolist()
+        # --- FIXED BLOCK START: Detect Directory vs CSV for drug IDs ---
+        if os.path.isdir(drug_path):
+            log.info(f"Detecting Drug IDs from directory: {drug_path}")
+            # Scan directory for .hkl files and extract IDs
+            # Expecting filename format: {DRUG_ID}.hkl
+            hkl_files = glob.glob(os.path.join(drug_path, "*.hkl"))
+            drugs = [os.path.splitext(os.path.basename(f))[0] for f in hkl_files]
+            if not drugs:
+                raise ValueError(f"No .hkl files found in {drug_path}")
         else:
-            drugs = drug_df.iloc[:, 0].astype(str).unique().tolist()
+            log.info(f"Detecting Drug IDs from CSV: {drug_path}")
+            drug_df = pd.read_csv(drug_path)
+            if "Drug_ID" in drug_df.columns:
+                drugs = drug_df["Drug_ID"].astype(str).unique().tolist()
+            elif "DRUG_ID" in drug_df.columns:
+                drugs = drug_df["DRUG_ID"].astype(str).unique().tolist()
+            else:
+                drugs = drug_df.iloc[:, 0].astype(str).unique().tolist()
+        # --- FIXED BLOCK END ---
 
         # Cells (for Stratified CV)
         meta_df = pd.read_csv(meta_path)
@@ -330,8 +338,7 @@ class DrugResponsePredictionRunner:
 
         else:
             # Single Split (Legacy/Simple/LOTO)
-            # Arguments handled by loader defaults or config fallback
-            splits.append({})  # Empty dict uses config defaults or specific 'test_drug' arg logic in _run_single_split
+            splits.append({})
 
         # --- EXECUTE ---
         results = []
