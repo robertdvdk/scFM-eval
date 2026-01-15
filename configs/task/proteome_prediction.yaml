@@ -8,14 +8,23 @@ task:
 
   data:
     data_root: data/proteome_prediction/
-    rna_train_path: ground_truth/pbmc/PBMC_trainset_preprocessed
-    rna_test_path: ground_truth/pbmc/PBMC_testset_preprocessed
-    prot_train_path: ground_truth/pbmc/prot_train
-    prot_test_path: ground_truth/pbmc/prot_test
-    submission_train: [submission/my_init_4gpu_lrx2_PBMC_trainset]
-    submission_test: [submission/my_init_4gpu_lrx2_PBMC_testset]
+    rna_train_path: ground_truth/perturb/control_rna
+    rna_test_path: ground_truth/perturb/perturbed_rna
+    prot_train_path: ground_truth/perturb/control_protein
+    prot_test_path: ground_truth/perturb/perturbed_protein
+    submission_train: [submission/mean_control, submission/LinReg_control, submission/my_init_4gpu_lrx2_control_embeddings, submission/control_256]
+    submission_test: [submission/mean_perturbed, submission/LinReg_perturbed, submission/my_init_4gpu_lrx2_perturbed_embeddings, submission/perturbed_256]
+
+    # data_root: data/proteome_prediction/
+    # rna_train_path: ground_truth/pbmc/PBMC_trainset_preprocessed
+    # rna_test_path: ground_truth/pbmc/PBMC_testset_preprocessed
+    # prot_train_path: ground_truth/pbmc/prot_train
+    # prot_test_path: ground_truth/pbmc/prot_test
+    # submission_train: [submission/mean_PBMC_train, submission/LinReg_PBMC_train, submission/my_init_4gpu_lrx2_PBMC_trainset, submission/PBMC_trainset_256]
+    # submission_test: [submission/mean_PBMC_test, submission/LinReg_PBMC_test, submission/my_init_4gpu_lrx2_PBMC_testset, submission/PBMC_testset_256]
 
   data_seed: 42
   model_seed: 42
   batch_size: 32
   num_workers: 4
+  val_split: 0.1  # Validation split proportion from training set

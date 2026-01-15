@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 log = logging.getLogger(__name__)
 
 # ==========================================
-# Tissue Lineages (Same as before)
+# Tissue Lineages
 # ==========================================
 TISSUE_GROUPS = {
     "LUNG": ["LUAD", "LUSC", "SCLC", "MESO", "NSCLC"],
@@ -158,7 +158,7 @@ class DataManager:
                 drug_id_str = os.path.splitext(filename)[0]
 
                 # Load HKL
-                # Assuming content is [feat_mat, adj_list, degree_list] based on your description
+                # Assuming content is [feat_mat, adj_list, degree_list]
                 try:
                     content = hkl.load(fpath)
                     feat_mat = content[0]

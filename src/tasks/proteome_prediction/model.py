@@ -15,6 +15,7 @@ class ProteomePredictionModel(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(512, protein_dim),
+            nn.Sigmoid(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

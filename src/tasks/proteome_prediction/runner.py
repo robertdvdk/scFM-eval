@@ -40,7 +40,7 @@ class ProteomePredictionRunner:
         optimizer = torch.optim.Adam(model.parameters())
         loss_fn = torch.nn.MSELoss()
 
-        for epoch in range(5):
+        for epoch in range(10):
             model.train()
             running_train_loss, n_train_samples = 0.0, 0
             for X, y in train_loader:
@@ -89,18 +89,34 @@ class ProteomePredictionRunner:
 
         self.all_results_dfs = dict()
         self.all_metrics_dfs = dict()
-        for submission in self.cfg.task.data.submission:
-            log.info(f"Running submission: {submission.split('/')[1]}")
+
+        # Pair up train and test submissions
+        submission_train_list = self.cfg.task.data.submission_train
+        submission_test_list = self.cfg.task.data.submission_test
+
+        if len(submission_train_list) != len(submission_test_list):
+            raise ValueError(
+                f"Mismatch: {len(submission_train_list)} train submissions vs {len(submission_test_list)} "
+                f"test submissions"
+            )
+
+        for submission_train, submission_test in zip(submission_train_list, submission_test_list, strict=True):
+            submission_name = submission_train.split("/")[1] if "/" in submission_train else submission_train
+            log.info(f"Running submission: {submission_name}")
+
             train_loader, val_loader, test_loader, cell_dim, prot_dim, train_df, val_df, test_df = get_prot_dataloaders(
-                cell_path=self.cfg.task.data.data_root + submission + ".csv",
-                prot_path=self.cfg.task.data.data_root + self.cfg.task.data.prot_path + ".csv",
+                train_cell_path=self.cfg.task.data.data_root + submission_train + ".csv",
+                train_prot_path=self.cfg.task.data.data_root + self.cfg.task.data.prot_train_path + ".csv",
+                test_cell_path=self.cfg.task.data.data_root + submission_test + ".csv",
+                test_prot_path=self.cfg.task.data.data_root + self.cfg.task.data.prot_test_path + ".csv",
                 batch_size=self.cfg.task.batch_size,
                 num_workers=self.cfg.task.num_workers,
                 data_seed=self.cfg.task.data_seed,
+                val_split=self.cfg.task.get("val_split", 0.1),
             )
             log.info(f"Input dimension: {cell_dim}, output dimension: {prot_dim}")
 
-            if submission == "submission/mean":
+            if submission_train.startswith("submission/mean"):
                 y_train = train_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
                 y_test = test_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
 
@@ -120,15 +136,16 @@ class ProteomePredictionRunner:
                 mse = np.mean((y_pred - y_test) ** 2)
                 log.info(f"Mean Predictor Global MSE: {mse:.4f}")
 
-                self.all_metrics_dfs[submission] = pd.DataFrame({
+                self.all_metrics_dfs[submission_name] = pd.DataFrame({
                     "Cosine Similarity": cos_sim.cpu().numpy(),
                     "Pearson Correlation": pcc,
+                    "1-MSE": (1 - mse),
                 })
 
-                self.all_results_dfs[submission] = pd.DataFrame(
+                self.all_results_dfs[submission_name] = pd.DataFrame(
                     y_pred, columns=test_df.columns[cell_dim:], index=test_df.index
                 )
-            elif submission == "submission/LinReg":
+            elif submission_train.startswith("submission/LinReg"):
                 X_train = train_df.iloc[:, :cell_dim].to_numpy(dtype=np.float32)
                 y_train = train_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
                 X_test = test_df.iloc[:, :cell_dim].to_numpy(dtype=np.float32)
@@ -157,26 +174,28 @@ class ProteomePredictionRunner:
                 # Cosine Similarity per protein
                 cos_sim = torch.cosine_similarity(res.T, gt.T)
 
-                self.all_metrics_dfs[submission] = pd.DataFrame({
+                self.all_metrics_dfs[submission_name] = pd.DataFrame({
                     "Cosine Similarity": cos_sim.cpu().numpy(),
                     "Pearson Correlation": pcc.statistic,
+                    "1-MSE": (1 - mse),
                 })
 
                 # Store results for plotting/comparison
-                self.all_results_dfs[submission] = pd.DataFrame(
+                self.all_results_dfs[submission_name] = pd.DataFrame(
                     pred_raw, columns=test_df.columns[cell_dim:], index=test_df.index
                 )
             else:
-                self.train_model(submission, train_loader, val_loader, test_loader, cell_dim, prot_dim, test_df)
+                self.train_model(submission_name, train_loader, val_loader, test_loader, cell_dim, prot_dim, test_df)
 
-                res = torch.from_numpy(self.all_results_dfs[submission].to_numpy(dtype=np.float32))
+                res = torch.from_numpy(self.all_results_dfs[submission_name].to_numpy(dtype=np.float32))
                 gt = torch.from_numpy(test_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32))
-
+                mse = torch.nn.functional.mse_loss(res, gt)
                 pcc = stats.pearsonr(res, gt, axis=0)
                 cos_sim = torch.cosine_similarity(res.T, gt.T)
-                self.all_metrics_dfs[submission] = pd.DataFrame({
+                self.all_metrics_dfs[submission_name] = pd.DataFrame({
                     "Cosine Similarity": cos_sim.cpu().numpy(),
                     "Pearson Correlation": pcc.statistic,
+                    "1-MSE": (1 - mse).cpu().numpy(),
                 })
 
         # 1. Prepare long-form DataFrame
@@ -190,8 +209,8 @@ class ProteomePredictionRunner:
         full_plot_df = pd.concat(plot_list, ignore_index=True)
 
         # 2. Setup Subplots: 1 row, 2 columns
-        fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
-        metrics = ["Pearson Correlation", "Cosine Similarity"]
+        fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=False)
+        metrics = ["Pearson Correlation", "Cosine Similarity", "1-MSE"]
         colors = sns.color_palette("Set2", len(self.all_metrics_dfs))
 
         for i, metric in enumerate(metrics):
@@ -203,7 +222,7 @@ class ProteomePredictionRunner:
                 ax=axes[i],  # Direct the plot to the specific subplot axis
                 palette=colors,
                 showfliers=False,  # Removes extreme outliers for visual clarity
-                legend=(i == 1),  # Only show legend on the second plot to avoid redundancy
+                legend=(i == 2),  # Only show legend on the second plot to avoid redundancy
             )
 
             axes[i].set_title(metric)

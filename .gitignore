@@ -39,3 +39,6 @@ temp/
 *.gz
 *.txt
 *.xlsx
+
+.claude/*
+CLAUDE.md
