@@ -84,7 +84,7 @@ class DrugResponsePredictionRunner:
     def _train_epoch(self, train_loader, model, optimizer, criterion):
         model.train()
         running_loss = 0.0
-        for cell_vec, drug_vec, target, _ in train_loader:
+        for cell_vec, drug_vec, target, _, _ in train_loader:
             cell_vec = cell_vec.to(self.device)
             target = target.to(self.device)
 
