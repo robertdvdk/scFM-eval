@@ -9,3 +9,8 @@ Tasks to implement:
     - [ ] Perturbed proteome prediction
 - [ ] Gene perturbation
 - [ ] Drug reponse prediction
+
+
+Use abstract base classes for the models?
+runner shouldn't know how to train the model, just call model.train
+hydra: take "magic numbers" into a config

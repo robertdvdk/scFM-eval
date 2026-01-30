@@ -8,10 +8,10 @@ task:
 
   data:
     data_root: data/drug_response_prediction/
-    drug_emb_path: ground_truth/drug_graph/
+    drug_emb_path: ground_truth/drug_embeddings_molformer.csv
     dose_response_path: ground_truth/dose_response_matrix.csv
     metadata: ground_truth/dose_response_subset.csv
-    submission: submission/cancergpt_baseline_embeddings.csv
+    submission: submission/scGPT_pancancer_embeddings.csv
 
   # ==========================================
   # EVALUATION STRATEGY
@@ -22,7 +22,7 @@ task:
   #   3. 'cold_cell'       (Inductive Biology: Unseen Cells)
   #   4. 'double_cold'     (Zero-Shot: Unseen Drug x Unseen Cell)
   #   5. 'loto'            (OOD: Leave-One-Tissue-Out)
-  split_mode: "random"
+  split_mode: "cold_drug"
 
   # ==========================================
   # ROBUSTNESS (K-Fold Cross Validation)
@@ -31,7 +31,7 @@ task:
   # This AUTOMATICALLY handles splitting and overrides 'test_drug'/'drug_proportion'.
   # Supported for: 'cold_drug', 'cold_cell', 'double_cold'.
   # Ignored for: 'loto' (uses biology), 'random'.
-  k_fold: 0 # Set to 0 or 1 to disable
+  k_fold: 10 # Set to 0 or 1 to disable
 
   # ==========================================
   # SINGLE SPLIT ARGUMENTS (Used if k_fold <= 1)

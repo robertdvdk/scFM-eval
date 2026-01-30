@@ -44,8 +44,7 @@ extend-include = ["*.ipynb"]
 preview = true
 
 [tool.ruff.lint]
-# Enable Pyflakes (F), pycodestyle (E, W), isort (I), and bugbear (B)
-select = ["F", "E", "W", "I", "B"]
+select = ["F", "E", "W", "I", "B", "UP", "C4", "SIM"]
 ignore = []
 
 [tool.ruff.format]

@@ -35,12 +35,74 @@ class ProteomePredictionRunner:
             torch.backends.cudnn.benchmark = False
         log.info(f"Random seed set to {seed}")
 
+    def _create_scatter_plots(self):
+        """Create scatter plots of predicted vs true values for each method."""
+        if self.ground_truth is None:
+            log.warning("Ground truth not available, skipping scatter plots")
+            return
+
+        n_methods = len(self.all_results_dfs)
+        if n_methods == 0:
+            log.warning("No results to plot")
+            return
+
+        # Calculate number of rows and columns for subplots
+        n_cols = min(3, n_methods)
+        n_rows = (n_methods + n_cols - 1) // n_cols
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
+
+        # Handle single plot case
+        if n_methods == 1:
+            axes = np.array([axes])
+        axes = axes.flatten() if n_methods > 1 else axes
+
+        for idx, (method_name, pred_df) in enumerate(self.all_results_dfs.items()):
+            ax = axes[idx]
+
+            # Flatten predictions and ground truth
+            y_pred = pred_df.to_numpy(dtype=np.float32).flatten()
+            y_true = self.ground_truth.flatten()
+
+            # Calculate correlation for display
+            corr, _ = stats.pearsonr(y_pred, y_true)
+
+            # Create hexbin plot for better visualization of dense data
+            hexbin = ax.hexbin(y_true, y_pred, gridsize=50, cmap="Blues", mincnt=1, linewidths=0.2)
+
+            # Add colorbar to show density
+            cbar = plt.colorbar(hexbin, ax=ax)
+            cbar.set_label("Count", fontsize=9)
+
+            # Add diagonal line for perfect prediction
+            min_val = min(y_true.min(), y_pred.min())
+            max_val = max(y_true.max(), y_pred.max())
+            ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="Perfect prediction")
+
+            # Set labels and title
+            display_name = method_name.split("/")[-1]
+            ax.set_xlabel("True Values", fontsize=10)
+            ax.set_ylabel("Predicted Values", fontsize=10)
+            ax.set_title(f"{display_name}\nPearson R = {corr:.3f}", fontsize=11)
+            ax.legend(loc="upper left", fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+        # Hide any unused subplots
+        for idx in range(n_methods, len(axes)):
+            axes[idx].set_visible(False)
+
+        plt.tight_layout()
+        output_path = "predicted_vs_true_scatter_plots.png"
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        log.info(f"Scatter plots saved to {output_path}")
+        plt.close()
+
     def train_model(self, submission, train_loader, val_loader, test_loader, cell_dim, prot_dim, test_df):
         model = ProteomePredictionModel(cell_dim=cell_dim, protein_dim=prot_dim).cuda()
         optimizer = torch.optim.Adam(model.parameters())
         loss_fn = torch.nn.MSELoss()
 
-        for epoch in range(10):
+        for epoch in range(1):
             model.train()
             running_train_loss, n_train_samples = 0.0, 0
             for X, y in train_loader:
@@ -87,8 +149,9 @@ class ProteomePredictionRunner:
     def run(self) -> str:
         log.info(f"Running task: {self.cfg.task.name}")
 
-        self.all_results_dfs = dict()
-        self.all_metrics_dfs = dict()
+        self.all_results_dfs = {}
+        self.all_metrics_dfs = {}
+        self.ground_truth = None  # Will store ground truth TEST values
 
         # Pair up train and test submissions
         submission_train_list = self.cfg.task.data.submission_train
@@ -120,6 +183,10 @@ class ProteomePredictionRunner:
                 y_train = train_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
                 y_test = test_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
 
+                # Store ground truth on first iteration
+                if self.ground_truth is None:
+                    self.ground_truth = y_test
+
                 mean_vector = np.mean(y_train, axis=0)
 
                 y_pred = np.tile(mean_vector, (y_test.shape[0], 1))
@@ -150,6 +217,10 @@ class ProteomePredictionRunner:
                 y_train = train_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
                 X_test = test_df.iloc[:, :cell_dim].to_numpy(dtype=np.float32)
                 y_test = test_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
+
+                # Store ground truth on first iteration
+                if self.ground_truth is None:
+                    self.ground_truth = y_test
 
                 scaler_x = StandardScaler()
                 scaler_y = StandardScaler()
@@ -189,6 +260,10 @@ class ProteomePredictionRunner:
 
                 res = torch.from_numpy(self.all_results_dfs[submission_name].to_numpy(dtype=np.float32))
                 gt = torch.from_numpy(test_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32))
+
+                # Store ground truth on first iteration
+                if self.ground_truth is None:
+                    self.ground_truth = test_df.iloc[:, cell_dim:].to_numpy(dtype=np.float32)
                 mse = torch.nn.functional.mse_loss(res, gt)
                 pcc = stats.pearsonr(res, gt, axis=0)
                 cos_sim = torch.cosine_similarity(res.T, gt.T)
@@ -197,6 +272,9 @@ class ProteomePredictionRunner:
                     "Pearson Correlation": pcc.statistic,
                     "1-MSE": (1 - mse).cpu().numpy(),
                 })
+
+        # Create scatter plots of predicted vs true values for each method
+        self._create_scatter_plots()
 
         # 1. Prepare long-form DataFrame
         plot_list = []
