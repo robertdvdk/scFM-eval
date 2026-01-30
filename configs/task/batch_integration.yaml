@@ -2,21 +2,22 @@
 
 task:
   name: batch_integration
-  model_name: CancerGPT
-  run_group: ${task.data.ground_truth}
+  model_name:
+    - CancerFoundation
+    - scGPT_full
+    - scGPT_pancancer
+  dataset_name: neftel_ss2
+  run_group: ${task.dataset_name}
 
-  # Paths to the data artifacts
-  # In production, these might be passed via CLI overrides
+  # Paths derived from model_name and dataset_name
   data:
-    data_root: data/batch_integration/neftel_ss2/  # Where all the .h5ad files are stored
-    ground_truth: ground_truth/neftel_ss2  # Which .h5ad file to use as ground truth
-    submissions: submission/CancerGPT_epoch_15_neftel_ss2  # Which .h5ad file(s) to evaluate
+    data_root: data/batch_integration/${task.dataset_name}/
+    ground_truth: ground_truth/${task.dataset_name}
 
   # Column names in the Ground Truth .obs dataframe
   metadata:
     batch_key: sample
     label_key: subtype
-    embedding_key: CancerGPT
 
   # Configuration for scib-metrics
   metrics:

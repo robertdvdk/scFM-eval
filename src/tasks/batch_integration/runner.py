@@ -26,39 +26,35 @@ class BatchIntegrationRunner:
         # Load data
         self.adata = sc.read_h5ad(ground_truth_path)
 
-        # Handle both single file and list of files
-        submissions = self.cfg.task.data.submissions
-        if not isinstance(submissions, (list, ListConfig)):
-            submissions = [submissions]
-
-        # Extract embedding key from config
-        embedding_key = self.cfg.task.metadata.embedding_key
+        # Build submission paths from model_name list and dataset_name
+        model_names = self.cfg.task.model_name
+        if not isinstance(model_names, (list, ListConfig)):
+            model_names = [model_names]
+        dataset_name = self.cfg.task.dataset_name
 
         # Track embedding keys for benchmarker
         self.embedding_obsm_keys = []
 
         # Load all submissions and add their embeddings to adata
-        for submission_path in submissions:
-            submission_path = hydra.utils.to_absolute_path(self.cfg.task.data.data_root + submission_path + ".h5ad")
-            submission_name = Path(submission_path).stem
+        for model_name in model_names:
+            submission_path = hydra.utils.to_absolute_path(
+                self.cfg.task.data.data_root + f"submission/{model_name}_{dataset_name}.csv"
+            )
+            submission_name = f"{model_name}_{dataset_name}"
 
             log.info(f"Loading submission: {submission_name}")
             log.info(f"From: {submission_path}")
 
-            submission = sc.read_h5ad(submission_path)
+            submission_df = pd.read_csv(submission_path, index_col=0)
 
             # Validate alignment (fail fast)
-            if not self.adata.obs_names.equals(submission.obs_names):
+            if not self.adata.obs_names.equals(pd.Index(submission_df.index.astype(str))):
                 raise ValueError(
-                    f"Cell ID mismatch in {submission_name}: Submission obs_names must match Ground Truth order."
+                    f"Cell ID mismatch in {submission_name}: Submission cell IDs must match Ground Truth order."
                 )
 
-            # Check embedding exists
-            if embedding_key not in submission.obsm:
-                raise KeyError(f"Embedding key '{embedding_key}' not found in {submission_name}.obsm")
-
             # Add embedding with unique key
-            self.adata.obsm[submission_name] = submission.obsm[embedding_key]
+            self.adata.obsm[submission_name] = submission_df.values
             self.embedding_obsm_keys.append(submission_name)
 
         log.info(f"Data shape: {self.adata.shape}")
