@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import hydra
 import numpy as np
@@ -105,9 +105,10 @@ class DrugResponsePredictionRunner:
         all_preds = []
         all_targets = []
         all_drug_ids = []
+        all_cell_ids = []
 
         with torch.no_grad():
-            for cell_vec, drug_vec, target, d_idx in data_loader:
+            for cell_vec, drug_vec, target, d_idx, c_idx in data_loader:
                 cell_vec = cell_vec.to(self.device)
                 drug_vec = drug_vec.to(self.device)
                 target = target.to(self.device)
@@ -119,18 +120,34 @@ class DrugResponsePredictionRunner:
                 all_preds.extend(out.cpu().numpy().flatten())
                 all_targets.extend(target.cpu().numpy().flatten())
                 all_drug_ids.extend(d_idx.cpu().numpy().flatten())
+                all_cell_ids.extend(c_idx.cpu().numpy().flatten())
+
+        df_res = pd.DataFrame({
+            "pred": all_preds,
+            "target": all_targets,
+            "drug_idx": all_drug_ids,
+            "cell_idx": all_cell_ids,
+        })
 
         # Calculate Per-Drug Pearson
-        df_res = pd.DataFrame({"pred": all_preds, "target": all_targets, "drug_idx": all_drug_ids})
-        correlations = []
+        drug_correlations = []
         for _, group in df_res.groupby("drug_idx"):
             if len(group) > 5:  # TODO remove?
                 if group["pred"].std() < 1e-9 or group["target"].std() < 1e-9:  # TODO remove?
                     continue
                 r, _ = pearsonr(group["pred"], group["target"])
-                correlations.append(r)
+                drug_correlations.append(r)
+        mean_per_drug_r = np.mean(drug_correlations) if drug_correlations else 0.0
 
-        mean_per_drug_r = np.mean(correlations) if correlations else 0.0
+        # Calculate Per-Cell Pearson
+        cell_correlations = []
+        for _, group in df_res.groupby("cell_idx"):
+            if len(group) > 5:
+                if group["pred"].std() < 1e-9 or group["target"].std() < 1e-9:
+                    continue
+                r, _ = pearsonr(group["pred"], group["target"])
+                cell_correlations.append(r)
+        mean_per_cell_r = np.mean(cell_correlations) if cell_correlations else 0.0
 
         # Calculate Global Pearson
         if len(all_targets) > 1 and np.std(np.array(all_preds)) > 1e-9:
@@ -138,15 +155,22 @@ class DrugResponsePredictionRunner:
         else:
             global_r = 0.0
 
-        return total_loss / len(data_loader), mean_per_drug_r, np.array(all_targets), np.array(all_preds), global_r
+        return (
+            total_loss / len(data_loader),
+            mean_per_drug_r,
+            mean_per_cell_r,
+            np.array(all_targets),
+            np.array(all_preds),
+            global_r,
+        )
 
     def _run_single_split(
         self,
-        test_drugs: List[str] | None = None,
-        val_drugs: List[str] | None = None,
-        test_cells: List[str] | None = None,
-        val_cells: List[str] | None = None,
-    ) -> Dict[str, Any]:
+        test_drugs: list[str] | None = None,
+        val_drugs: list[str] | None = None,
+        test_cells: list[str] | None = None,
+        val_cells: list[str] | None = None,
+    ) -> dict[str, Any]:
 
         # Determine Mode for Logging
         split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
@@ -200,7 +224,7 @@ class DrugResponsePredictionRunner:
 
         for epoch in range(epochs):
             train_loss = self._train_epoch(train_loader, model, optimizer, criterion)
-            val_mae, val_per_drug, _, _, val_global = self._evaluate(val_loader, model, eval_criterion)
+            val_mae, val_per_drug, val_per_cell, _, _, val_global = self._evaluate(val_loader, model, eval_criterion)
 
             current_metric = val_per_drug if split_mode == "cold_drug" else val_global
 
@@ -214,21 +238,28 @@ class DrugResponsePredictionRunner:
             if (epoch + 1) % 10 == 0:
                 log.info(
                     f"Epoch {epoch + 1} | Train Loss: {train_loss:.4f} | Val MAE: {val_mae:.4f} |"
-                    f" Val Per-Drug PCC: {val_per_drug:.4f} | Val Global PCC: {val_global:.4f}"
+                    f" Val Per-Drug PCC: {val_per_drug:.4f} | Val Per-Cell PCC: {val_per_cell:.4f}"
+                    f" | Val Global PCC: {val_global:.4f}"
                 )
 
             if patience_counter >= patience:
                 log.info(
                     f"Early stopping at epoch {epoch + 1} | Loss: {train_loss:.4f} | Val MAE: {val_mae:.4f} |"
-                    f" Val Per-Drug PCC: {val_per_drug:.4f} | Val Global PCC: {val_global:.4f}"
+                    f" Val Per-Drug PCC: {val_per_drug:.4f} | Val Per-Cell PCC: {val_per_cell:.4f}"
+                    f" | Val Global PCC: {val_global:.4f}"
                 )
                 break
 
         if best_model_state:
             model.load_state_dict(best_model_state)
 
-        test_mae, test_pd_pcc, test_t, test_p, test_g_pcc = self._evaluate(test_loader, model, eval_criterion)
-        log.info(f"Test MAE: {test_mae:.3f} | Test Per-Drug PCC: {test_pd_pcc:.4f} | Test Global PCC: {test_g_pcc:.4f}")
+        test_mae, test_pd_pcc, test_pc_pcc, test_t, test_p, test_g_pcc = self._evaluate(
+            test_loader, model, eval_criterion
+        )
+        log.info(
+            f"Test MAE: {test_mae:.3f} | Test Per-Drug PCC: {test_pd_pcc:.4f} |"
+            f" Test Per-Cell PCC: {test_pc_pcc:.4f} | Test Global PCC: {test_g_pcc:.4f}"
+        )
 
         if self.cfg.task.get("save_predictions", True):
             self._save_predictions(test_p, test_t, test_pd_pcc, split_name, test_g_pcc)
@@ -236,6 +267,7 @@ class DrugResponsePredictionRunner:
         return {
             "test_mae": float(test_mae),
             "test_per_drug_pcc": float(test_pd_pcc),
+            "test_per_cell_pcc": float(test_pc_pcc),
             "test_global_pcc": float(test_g_pcc),
         }
 
@@ -256,7 +288,7 @@ class DrugResponsePredictionRunner:
         with open(output_dir / "metrics.csv", "a") as f:
             f.write(f"{split_name},{per_drug_pcc},{global_pcc}\n")
 
-    def run(self) -> Dict[str, Any]:
+    def run(self) -> dict[str, Any]:
         # Config
         split_mode = self.cfg.task.get("split_mode", "cancer_stratified")
         k_fold = self.cfg.task.get("k_fold", 0)
@@ -350,6 +382,7 @@ class DrugResponsePredictionRunner:
         # Summarize
         pd_mae = [r["test_mae"] for r in results]
         pd_per_pccs = [r["test_per_drug_pcc"] for r in results]
+        pc_per_pccs = [r["test_per_cell_pcc"] for r in results]
         pd_global_pccs = [r["test_global_pcc"] for r in results]
 
         log.info("=== Drug Response Prediction Summary ===")
@@ -357,6 +390,8 @@ class DrugResponsePredictionRunner:
         log.info(f"Std Dev MAE across splits: {np.std(pd_mae):.4f}")
         log.info(f"Mean Per-Drug PCC across splits: {np.mean(pd_per_pccs):.4f}")
         log.info(f"Std Dev Per-Drug PCC across splits: {np.std(pd_per_pccs):.4f}")
+        log.info(f"Mean Per-Cell PCC across splits: {np.mean(pc_per_pccs):.4f}")
+        log.info(f"Std Dev Per-Cell PCC across splits: {np.std(pc_per_pccs):.4f}")
         log.info(f"Mean Global PCC across splits: {np.mean(pd_global_pccs):.4f}")
         log.info(f"Std Dev Global PCC across splits: {np.std(pd_global_pccs):.4f}")
         return {
@@ -364,6 +399,8 @@ class DrugResponsePredictionRunner:
             "std_mae": float(np.std(pd_mae)),
             "mean_per_drug_pcc": float(np.mean(pd_per_pccs)),
             "std_per_drug_pcc": float(np.std(pd_per_pccs)),
+            "mean_per_cell_pcc": float(np.mean(pc_per_pccs)),
+            "std_per_cell_pcc": float(np.std(pc_per_pccs)),
             "mean_global_pcc": float(np.mean(pd_global_pccs)),
             "std_global_pcc": float(np.std(pd_global_pccs)),
             "all_results": results,

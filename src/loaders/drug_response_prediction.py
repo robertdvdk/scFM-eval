@@ -1,7 +1,6 @@
 import glob
 import logging
 import os
-from typing import Dict, List, Optional, Tuple, Union
 
 import hickle as hkl
 import numpy as np
@@ -85,9 +84,9 @@ class GraphCollator:
 class PharmacogenomicsDataset(Dataset):
     def __init__(
         self,
-        indices: List[Tuple[int, int, float]],
+        indices: list[tuple[int, int, float]],
         cell_tensor: torch.Tensor,
-        drug_data: Union[torch.Tensor, Dict[int, Data]],
+        drug_data: torch.Tensor | dict[int, Data],
     ):
         """
         drug_data: Tensor (if embeddings) OR Dict[int_idx -> PyG Data] (if graphs)
@@ -107,14 +106,9 @@ class PharmacogenomicsDataset(Dataset):
 
         cell_vec = self.cell_tensor[c_idx]
 
-        if self.is_graph:
-            # d_idx is the integer key mapped to the Data object
-            drug_vec = self.drug_data[d_idx]
-        else:
-            # d_idx is the row index in the tensor
-            drug_vec = self.drug_data[d_idx]
+        drug_vec = self.drug_data[d_idx]
 
-        return cell_vec, drug_vec, torch.tensor(label, dtype=torch.float32), d_idx
+        return cell_vec, drug_vec, torch.tensor(label, dtype=torch.float32), d_idx, c_idx
 
 
 # ==========================================
@@ -126,7 +120,7 @@ class DataManager:
         cell_embedding_path: str,
         drug_path: str,
         response_matrix_path: str,
-        metadata_path: Optional[str] = None,
+        metadata_path: str | None = None,
     ):
         log.info("Initializing DataManager...")
 
@@ -253,12 +247,12 @@ class DataManager:
         self,
         df: pd.DataFrame,
         mode: str = "random",
-        test_drugs: Optional[List[str]] = None,
-        val_drugs: Optional[List[str]] = None,
-        test_cells: Optional[List[str]] = None,
-        val_cells: Optional[List[str]] = None,
-        holdout_tissue: Optional[str] = None,
-        drug_prop: Optional[float] = None,
+        test_drugs: list[str] | None = None,
+        val_drugs: list[str] | None = None,
+        test_cells: list[str] | None = None,
+        val_cells: list[str] | None = None,
+        holdout_tissue: str | None = None,
+        drug_prop: float | None = None,
         val_split: float = 0.1,
         test_split: float = 0.1,
         data_seed: int = 42,
@@ -430,14 +424,14 @@ def get_drp_dataloaders(
     cell_path: str,
     drug_path: str,
     matrix_path: str,
-    metadata_path: Optional[str],
+    metadata_path: str | None,
     split_mode: str = "cancer_stratified",
-    test_drugs: Optional[List[str]] = None,
-    val_drugs: Optional[List[str]] = None,
-    test_cells: Optional[List[str]] = None,
-    val_cells: Optional[List[str]] = None,
-    holdout_tissue: Optional[str] = None,
-    drug_prop: Optional[float] = None,
+    test_drugs: list[str] | None = None,
+    val_drugs: list[str] | None = None,
+    test_cells: list[str] | None = None,
+    val_cells: list[str] | None = None,
+    holdout_tissue: str | None = None,
+    drug_prop: float | None = None,
     batch_size: int = 32,
     num_workers: int = 0,
     data_seed: int = 42,

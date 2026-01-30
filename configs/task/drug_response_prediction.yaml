@@ -11,7 +11,7 @@ task:
     drug_emb_path: ground_truth/drug_embeddings_molformer.csv
     dose_response_path: ground_truth/dose_response_matrix.csv
     metadata: ground_truth/dose_response_subset.csv
-    submission: submission/scGPT_pancancer_embeddings.csv
+    submission: submission/scGPT_pancancer_expr.csv
 
   # ==========================================
   # EVALUATION STRATEGY
@@ -43,7 +43,7 @@ task:
   drug_proportion: null   # Optional: Float (e.g. 0.1) to hold out 10% random drugs
 
   # For 'loto' mode:
-  test_tissue: "LAML"       # Required: TCGA Label (e.g. "LUAD", "BRCA", "LAML")
+  test_tissue: null       # Required: TCGA Label (e.g. "LUAD", "BRCA", "LAML")
 
   # ==========================================
   # TRAINING HYPERPARAMETERS
