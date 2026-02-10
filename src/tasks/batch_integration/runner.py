@@ -8,6 +8,8 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, ListConfig
 from scib_metrics.benchmark import BatchCorrection, Benchmarker, BioConservation
 
+from .baselines import run_baselines
+
 log = logging.getLogger(__name__)
 
 
@@ -56,6 +58,13 @@ class BatchIntegrationRunner:
             # Add embedding with unique key
             self.adata.obsm[submission_name] = submission_df.values
             self.embedding_obsm_keys.append(submission_name)
+
+        # Run classical baselines if configured
+        baselines_cfg = self.cfg.task.get("baselines", None)
+        if baselines_cfg:
+            batch_key = self.cfg.task.metadata.batch_key
+            baseline_keys = run_baselines(self.adata, baselines_cfg, batch_key)
+            self.embedding_obsm_keys.extend(baseline_keys)
 
         log.info(f"Data shape: {self.adata.shape}")
         log.info(f"Evaluating {len(self.embedding_obsm_keys)} submissions: {self.embedding_obsm_keys}")

@@ -31,8 +31,8 @@ ARG UID=1000
 ARG GID=1000
 RUN groupadd -g ${GID} appuser && useradd -m -u ${UID} -g ${GID} -s /bin/bash appuser
 
-# Copy the pre-built virtual environment from the builder
-COPY --from=builder /opt/venv /opt/venv
+# Copy the pre-built virtual environment from the builder and give appuser ownership
+COPY --from=builder --chown=${UID}:${GID} /opt/venv /opt/venv
 
 # Add the virtual environment to the PATH
 ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
