@@ -4,6 +4,7 @@ from pathlib import Path
 import hydra
 import pandas as pd
 import scanpy as sc
+import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, ListConfig
 from scib_metrics.benchmark import BatchCorrection, Benchmarker, BioConservation
@@ -36,6 +37,21 @@ class BatchIntegrationRunner:
 
         # Track embedding keys for benchmarker
         self.embedding_obsm_keys = []
+
+        # If a foundation model is configured, compute embeddings on-the-fly
+        if getattr(self.cfg, "model", None) is not None:
+            from models import get_model
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            wrapper = get_model(self.cfg)
+            wrapper.load_pretrained()
+            wrapper.to(device)
+
+            result = wrapper.embed(self.adata, batch_size=self.cfg.model.batch_size)
+            obsm_key = f"{wrapper.name}_{dataset_name}"
+            self.adata.obsm[obsm_key] = result.cell_embeddings
+            self.embedding_obsm_keys.append(obsm_key)
+            log.info(f"Computed {wrapper.name} embeddings: {obsm_key} with shape {result.cell_embeddings.shape}")
 
         # Load all submissions and add their embeddings to adata
         for model_name in model_names:

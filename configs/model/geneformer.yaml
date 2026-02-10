@@ -1,0 +1,10 @@
+# @package _global_
+
+model:
+  name: geneformer
+  pretrained_path: null
+  token_dictionary_path: null
+  median_dictionary_path: null
+  max_input_size: 2048
+  embedding_strategy: cls  # cls or mean_pool
+  batch_size: 64
