@@ -3,12 +3,8 @@
 task:
   name: batch_integration
   model_name:
-    # - CancerFoundation
-    # - scGPT_full
-    - scGPT_integr
-    - scGPT_embed
-    # - scGPT_pancancer
-  dataset_name: kim_lung
+    - CancerFoundation
+  dataset_name: neftel_ss2
   run_group: ${task.dataset_name}
 
   # Paths derived from model_name and dataset_name
@@ -35,6 +31,15 @@ task:
     - method: harmony
       n_pcs: 30
       n_hvgs: 2000
+    - method: scvi
+      n_hvgs: 2000
+      n_latent: 30
+      max_epochs: 400
+    - method: scanvi
+      n_hvgs: 2000
+      n_latent: 30
+      max_epochs_scvi: 400
+      max_epochs_scanvi: 20
 
   parameters:
     seed: 42

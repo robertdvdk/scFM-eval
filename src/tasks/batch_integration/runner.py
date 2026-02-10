@@ -63,7 +63,8 @@ class BatchIntegrationRunner:
         baselines_cfg = self.cfg.task.get("baselines", None)
         if baselines_cfg:
             batch_key = self.cfg.task.metadata.batch_key
-            baseline_keys = run_baselines(self.adata, baselines_cfg, batch_key)
+            label_key = self.cfg.task.metadata.label_key
+            baseline_keys = run_baselines(self.adata, baselines_cfg, batch_key, label_key)
             self.embedding_obsm_keys.extend(baseline_keys)
 
         log.info(f"Data shape: {self.adata.shape}")

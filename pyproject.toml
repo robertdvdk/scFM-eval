@@ -24,6 +24,7 @@ dependencies = [
     "pytorch-lightning>=2.6.0",
     "rdkit>=2025.9.3",
     "scib-metrics>=0.5.7",
+    "scvi-tools>=1.2.0",
     "scikit-image>=0.25.2",
     "torch>=2.7.0",
     "torch-geometric>=2.7.0",

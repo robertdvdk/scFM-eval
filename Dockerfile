@@ -23,13 +23,14 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 RUN apt-get update && \
-    apt-get install -y git wget build-essential && \
+    apt-get install -y git wget build-essential sudo && \
     rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for devcontainer
 ARG UID=1000
 ARG GID=1000
-RUN groupadd -g ${GID} appuser && useradd -m -u ${UID} -g ${GID} -s /bin/bash appuser
+RUN groupadd -g ${GID} appuser && useradd -m -u ${UID} -g ${GID} -s /bin/bash appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/appuser
 
 # Copy the pre-built virtual environment from the builder and give appuser ownership
 COPY --from=builder --chown=${UID}:${GID} /opt/venv /opt/venv

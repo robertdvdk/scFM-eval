@@ -15,6 +15,15 @@ where TASK is batch_integration, drug_response_prediction, gene_perturbation or 
 
 The scripts to generate the data are in data_prep.
 
+# Data format
+
+Ground truth `.h5ad` files should store data in two layers:
+
+- **`adata.X`**: Normalized and log1p-transformed expression data. This is used by methods that operate on log-normalized counts (e.g., Harmony for HVG selection and PCA).
+- **`adata.layers['counts']`**: Raw (unnormalized) integer counts. This is required by methods that perform their own internal normalization (e.g., scVI, scANVI).
+
+Storing both ensures a fair comparison: all methods start from the same preprocessing, while methods that need raw counts can access them directly.
+
 # Zero-shot batch integration
 [ TODO ]
 Batch integration is implemented using the scib_metrics package, and with the dataset from Neftel et al. (2019) (https://pubmed.ncbi.nlm.nih.gov/31327527/).
