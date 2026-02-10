@@ -11,7 +11,7 @@ task:
     drug_emb_path: ground_truth/drug_embeddings_molformer.csv
     dose_response_path: ground_truth/dose_response_matrix.csv
     metadata: ground_truth/dose_response_subset.csv
-    submission: submission/scGPT_pancancer_expr.csv
+    submission: submission/CancerFoundation_expr.csv
 
   # ==========================================
   # EVALUATION STRATEGY
@@ -20,9 +20,10 @@ task:
   #   1. 'random'          (Transductive: Random shuffle)
   #   2. 'cold_drug'       (Inductive Chemistry: Unseen Drugs)
   #   3. 'cold_cell'       (Inductive Biology: Unseen Cells)
-  #   4. 'double_cold'     (Zero-Shot: Unseen Drug x Unseen Cell)
-  #   5. 'loto'            (OOD: Leave-One-Tissue-Out)
-  split_mode: "cold_drug"
+  #   4. 'cancer_stratified' (Cold cell split stratified by cancer type)
+  #   5. 'double_cold'     (Zero-Shot: Unseen Drug x Unseen Cell)
+  #   6. 'loto'            (OOD: Leave-One-Tissue-Out)
+  split_mode: "cold_cell"
 
   # ==========================================
   # ROBUSTNESS (K-Fold Cross Validation)

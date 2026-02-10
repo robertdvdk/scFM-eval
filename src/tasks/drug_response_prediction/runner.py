@@ -320,8 +320,28 @@ class DrugResponsePredictionRunner:
         # Cells (for Stratified CV)
         meta_df = pd.read_csv(meta_path)
         cells = meta_df["COSMIC_ID"].astype(str).unique()
-        cell_map = dict(zip(meta_df["COSMIC_ID"].astype(str), meta_df["TCGA_DESC"], strict=True))
-        cell_labels = [cell_map.get(c, "Unknown") for c in cells]
+        cell_map = dict(zip(meta_df["COSMIC_ID"].astype(str), meta_df["TCGA_DESC"].fillna("unknown"), strict=True))
+        cell_labels = [cell_map[c] for c in cells]
+
+        from collections import Counter
+
+        label_counts = Counter(cell_labels)
+        log.info(f"Cancer type distribution ({len(label_counts)} types, {len(cells)} cells):")
+        for label, count in sorted(label_counts.items(), key=lambda x: x[1]):
+            log.info(f"  {label}: {count}")
+
+        # For cancer_stratified splits, drop ambiguous/rare cancer types
+        if k_fold > 1 and split_mode == "cancer_stratified":
+            exclude_labels = {"UNCLASSIFIED", "OTHER", "unknown"}
+            rare_labels = {lab for lab, c in label_counts.items() if c < k_fold}
+            drop_labels = exclude_labels | rare_labels
+            actual_drops = {lab for lab in drop_labels if lab in label_counts}
+            if actual_drops:
+                log.warning(f"Dropping {len(actual_drops)} cancer types (rare or ambiguous): {actual_drops}")
+                mask = [lab not in drop_labels for lab in cell_labels]
+                cells = [c for c, m in zip(cells, mask, strict=True) if m]
+                cell_labels = [lab for lab, m in zip(cell_labels, mask, strict=True) if m]
+                log.info(f"Remaining: {len(cells)} cells, {len(set(cell_labels))} cancer types")
 
         splits = []
 
@@ -341,14 +361,30 @@ class DrugResponsePredictionRunner:
                     v_drugs = d_arr[val_sub].tolist()
                     splits.append({"test_drugs": t_drugs, "val_drugs": v_drugs})
 
-            elif split_mode in ["cold_cell", "cancer_stratified"]:
+            elif split_mode == "cold_cell":
+                kf = KFold(n_splits=k_fold, shuffle=True, random_state=self.cfg.task.get("data_seed", 42))
+                c_arr = np.array(cells)
+                for tr_idx, te_idx in kf.split(c_arr):
+                    t_cells = c_arr[te_idx].tolist()
+                    tr_sub, val_sub = train_test_split(
+                        tr_idx,
+                        test_size=0.1,
+                        random_state=self.cfg.task.get("data_seed", 42),
+                    )
+                    v_cells = c_arr[val_sub].tolist()
+                    splits.append({"test_cells": t_cells, "val_cells": v_cells})
+
+            elif split_mode == "cancer_stratified":
                 skf = StratifiedKFold(n_splits=k_fold, shuffle=True, random_state=self.cfg.task.get("data_seed", 42))
                 c_arr = np.array(cells)
                 l_arr = np.array(cell_labels)
                 for tr_idx, te_idx in skf.split(c_arr, l_arr):
                     t_cells = c_arr[te_idx].tolist()
                     tr_sub, val_sub = train_test_split(
-                        tr_idx, test_size=0.1, stratify=l_arr[tr_idx], random_state=self.cfg.task.get("data_seed", 42)
+                        tr_idx,
+                        test_size=0.1,
+                        stratify=l_arr[tr_idx],
+                        random_state=self.cfg.task.get("data_seed", 42),
                     )
                     v_cells = c_arr[val_sub].tolist()
                     splits.append({"test_cells": t_cells, "val_cells": v_cells})

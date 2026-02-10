@@ -3,10 +3,12 @@
 task:
   name: batch_integration
   model_name:
-    - CancerFoundation
-    - scGPT_full
-    - scGPT_pancancer
-  dataset_name: neftel_ss2
+    # - CancerFoundation
+    # - scGPT_full
+    - scGPT_integr
+    - scGPT_embed
+    # - scGPT_pancancer
+  dataset_name: kim_lung
   run_group: ${task.dataset_name}
 
   # Paths derived from model_name and dataset_name
@@ -17,7 +19,7 @@ task:
   # Column names in the Ground Truth .obs dataframe
   metadata:
     batch_key: sample
-    label_key: subtype
+    label_key: celltype
 
   # Configuration for scib-metrics
   metrics:
