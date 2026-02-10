@@ -1,6 +1,7 @@
 defaults:
   - task: ???  # 1. Load configs/task/batch_integration.yaml
-  - _self_                   # 2. Then apply any overrides from this file (if any)
+  - optional model: null     # 2. Optional foundation model (e.g. model=scgpt)
+  - _self_                   # 3. Then apply any overrides from this file (if any)
 
 hydra:
   run:
