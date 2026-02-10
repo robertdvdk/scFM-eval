@@ -20,11 +20,9 @@
     }
   },
   "remoteUser": "appuser",
-  "postCreateCommand": "sudo chown -R appuser:appuser /opt/venv",
-  // Mount the current workspace folder to /app
+  "postCreateCommand": "uv sync --frozen",
   "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind",
   "workspaceFolder": "/app",
-
   "runArgs": [
     "--gpus", "all",
     "--shm-size", "8g"
