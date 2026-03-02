@@ -1,0 +1,14 @@
+# @package _global_
+
+model:
+  name: cancerfoundation
+  source_path: /CancerFoundation  # Path to CancerFoundation repo (added to sys.path)
+  pretrained_path: /CancerFoundation/save/my_init_4gpu_lrx2_2   # Path to model dir (contains vocab.json + .ckpt)
+  checkpoint_filename: epoch_epoch=14.ckpt                # Specific .ckpt file; null = auto-detect
+  gene_col: "index"                        # Column in adata.var with gene names; "index" = var_names
+  embsize: 512                             # Embedding dimension (d_model)
+  n_top_genes: 2000                        # Must be <= max_seq_len (1200 for this checkpoint)
+  l2_normalize: true                      # L2-normalize embeddings (set true to match legacy finetuning behavior)
+  batch_size: 8
+  env_path: envs/cancerfoundation/.venv    # Path to isolated venv (null = in-process)
+  subprocess_timeout: 3600                 # Max seconds for subprocess

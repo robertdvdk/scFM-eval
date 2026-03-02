@@ -6,12 +6,16 @@ task:
   model_name: CancerGPT
   run_group: ${task.split_mode}
 
+  foundation_models: []
+  run_baselines: false
+
   data:
     data_root: data/drug_response_prediction/
     drug_emb_path: ground_truth/drug_embeddings_molformer.csv
     dose_response_path: ground_truth/dose_response_matrix.csv
     metadata: ground_truth/dose_response_subset.csv
-    submission: submission/CancerFoundation_expr.csv
+    ground_truth_h5ad: ground_truth/expr.h5ad
+    submission: [submission/scFoundation_full_expr.csv,submission/scFoundation_max_expr.csv]
 
   # ==========================================
   # EVALUATION STRATEGY
@@ -45,6 +49,16 @@ task:
 
   # For 'loto' mode:
   test_tissue: null       # Required: TCGA Label (e.g. "LUAD", "BRCA", "LAML")
+
+  # ==========================================
+  # HVG+PCA BASELINE
+  # ==========================================
+  hvg_pca_baseline:
+    n_hvgs: 1200   # Number of highly variable genes
+    n_pcs: 256     # PCA components (match FM embedding dim)
+
+  # Raw expression baseline: train MLP on all genes, no HVG/PCA
+  run_raw_expression_baseline: false
 
   # ==========================================
   # TRAINING HYPERPARAMETERS

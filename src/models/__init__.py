@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import logging
 from typing import TYPE_CHECKING
 
 from omegaconf import DictConfig
@@ -36,7 +38,17 @@ def get_model(cfg: DictConfig) -> FoundationModelWrapper:
 
 
 # Import submodules so @register_model decorators execute at import time.
-from . import geneformer, scgpt  # noqa: E402, F401
+# Conditional imports: model packages may not be installed in the main env
+# when using subprocess-based isolation. Gracefully skip unavailable models.
+_log = logging.getLogger(__name__)
+
+for _mod_name in ["scgpt", "geneformer", "cancerfoundation", "scfoundation"]:
+    try:
+        importlib.import_module(f".{_mod_name}", package=__name__)
+    except ImportError:
+        _log.debug("Skipping model '%s': dependencies not installed", _mod_name)
+    except Exception:
+        _log.warning("Failed to import model '%s'", _mod_name, exc_info=True)
 
 __all__ = [
     "EmbeddingResult",

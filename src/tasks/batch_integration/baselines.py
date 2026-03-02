@@ -113,11 +113,22 @@ def run_baselines(adata: sc.AnnData, baseline_configs: list[DictConfig], batch_k
     Returns the list of obsm keys that were added.
     """
     added_keys = []
+    has_counts = "counts" in adata.layers
+    methods_requiring_counts = {"scvi", "scanvi"}
 
     for baseline_cfg in baseline_configs:
-        method = baseline_cfg["method"]
+        # Allow plain strings (e.g. CLI override 'task.baselines=[Harmony]')
+        if isinstance(baseline_cfg, str):
+            baseline_cfg = {"method": baseline_cfg}
+        method = baseline_cfg["method"].lower()
         if method not in BASELINE_REGISTRY:
             raise ValueError(f"Unknown baseline method: {method}. Available: {list(BASELINE_REGISTRY.keys())}")
+
+        if method in methods_requiring_counts and not has_counts:
+            log.warning(
+                f"Skipping baseline '{method}': adata.layers['counts'] not found (required for raw count models)"
+            )
+            continue
 
         # Extract kwargs (everything except 'method')
         kwargs = {k: v for k, v in baseline_cfg.items() if k != "method"}

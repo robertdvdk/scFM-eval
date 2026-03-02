@@ -29,6 +29,7 @@ dependencies = [
     "torch>=2.7.0",
     "torch-geometric>=2.7.0",
     "transformers>=4.57.3",
+    "wandb>=0.25.0",
 ]
 
 [dependency-groups]

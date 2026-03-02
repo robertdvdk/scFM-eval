@@ -23,6 +23,10 @@
   "postCreateCommand": "uv sync --frozen",
   "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind",
   "workspaceFolder": "/app",
+  "mounts": [
+    "source=/local/home/rvander/scFoundation,target=/scFoundation,type=bind,readonly",
+    "source=/local/home/rvander/CancerFoundation,target=/CancerFoundation,type=bind,readonly"
+  ],
   "runArgs": [
     "--gpus", "all",
     "--shm-size", "8g"
