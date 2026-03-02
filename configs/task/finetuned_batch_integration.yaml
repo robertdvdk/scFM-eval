@@ -1,0 +1,54 @@
+# @package _global_
+
+task:
+  name: finetuned_batch_integration
+  dataset_name: neftel_ss2
+  run_group: ${task.dataset_name}
+  foundation_models: []
+  model_name: test_dat
+
+  data:
+    data_root: data/batch_integration/${task.dataset_name}/
+    ground_truth: ground_truth/${task.dataset_name}
+
+  metadata:
+    batch_key: sample
+    label_key: subtype
+
+  metrics:
+    embedding_key: X_emb
+    n_neighbors: 15
+
+  finetune:
+    epochs: 5
+    lr: 1e-4
+    batch_size: 16
+    mask_ratio: 0.4
+    val_fraction: 0.1
+    do_dat: true
+    dat_weight: 1.0
+    dat_scale: 1.0
+    n_critic: 5             # discriminator steps per encoder step (WGAN-style)
+    ecs_threshold: 0.0      # 0 = disabled, 0.8 = typical
+    ecs_weight: 10.0
+    schedule_ratio: 0.9
+    patience: 15
+    amp: false               # bfloat16 mixed precision (reduces memory)
+    seed: 42
+    wandb: true
+    wandb_project: scFM-eval
+    wandb_name: null  # auto-generated from config params
+
+  baselines:
+    - method: scvi
+      n_hvgs: 2000
+      n_latent: 30
+      max_epochs: 400
+    - method: scanvi
+      n_hvgs: 2000
+      n_latent: 30
+      max_epochs_scvi: 400
+      max_epochs_scanvi: 20
+
+  parameters:
+    seed: 42

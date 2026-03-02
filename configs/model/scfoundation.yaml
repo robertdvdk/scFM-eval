@@ -1,0 +1,15 @@
+# @package _global_
+
+model:
+  name: scfoundation
+  pretrained_path: /scFoundation/model  # Mounted from host ~/scFoundation into container
+  ckpt_path: null                    # null = use {pretrained_path}/models/models.ckpt
+  model_key: cell                    # Checkpoint key: 'cell' for cell embeddings, 'gene' for gene embeddings
+  gene_col: "index"                  # Column in adata.var with gene names; "index" = var_names
+  input_type: singlecell             # singlecell or bulk
+  pre_normalized: "T"                # F = raw counts, T = already normalized+log1p, A = normalized with total appended
+  tgthighres: "t4"                   # Sequencing depth token: f1 = fold×1, t4 = target 10^4, a5 = add 5
+  pool_type: max                     # all = concat(CLS, SEP, max, mean) → 3072-dim; max = max pool → 768-dim
+  batch_size: 1
+  env_path: envs/scfoundation/.venv   # Isolated venv with einops, local_attention, etc.
+  subprocess_timeout: 3600

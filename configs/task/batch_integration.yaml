@@ -3,19 +3,22 @@
 task:
   name: batch_integration
   model_name:
-    - CancerFoundation
+    # - CancerFoundation
   dataset_name: neftel_ss2
   run_group: ${task.dataset_name}
+
+  # Foundation models to compute embeddings for (references configs/model/*.yaml)
+  foundation_models: []
 
   # Paths derived from model_name and dataset_name
   data:
     data_root: data/batch_integration/${task.dataset_name}/
-    ground_truth: ground_truth/${task.dataset_name}
+    ground_truth: ground_truth/my${task.dataset_name}
 
   # Column names in the Ground Truth .obs dataframe
   metadata:
     batch_key: sample
-    label_key: celltype
+    label_key: subtype
 
   # Configuration for scib-metrics
   metrics:
@@ -27,19 +30,11 @@ task:
   #   n_hvg: null  # Number of highly variable genes to select
 
   # Classical baseline methods (computed on-the-fly from ground truth)
+  # Trained baselines (scVI, scANVI) belong in finetuned_batch_integration
   baselines:
     - method: harmony
       n_pcs: 30
       n_hvgs: 2000
-    - method: scvi
-      n_hvgs: 2000
-      n_latent: 30
-      max_epochs: 400
-    - method: scanvi
-      n_hvgs: 2000
-      n_latent: 30
-      max_epochs_scvi: 400
-      max_epochs_scanvi: 20
 
   parameters:
     seed: 42

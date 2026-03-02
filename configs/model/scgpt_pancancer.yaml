@@ -1,0 +1,17 @@
+# @package _global_
+
+model:
+  name: scgpt
+  pretrained_path: save/scGPT_pancancer          # Required: path to model dir (contains args.json, vocab.json, best_model.pt)
+  gene_col: "index"              # Column in adata.var with gene names; "index" = use var_names
+  use_fast_transformer: false     # Set false if flash-attn is not installed
+  d_model: 512
+  n_layers: 12
+  n_heads: 8
+  max_seq_len: 1200
+  n_bins: 51
+  n_top_genes: 1200
+  embedding_strategy: cls
+  batch_size: 8
+  env_path: envs/scgpt/.venv
+  subprocess_timeout: 3600

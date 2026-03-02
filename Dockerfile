@@ -23,7 +23,7 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 RUN apt-get update && \
-    apt-get install -y git wget build-essential sudo locales && \
+    apt-get install -y git git-lfs wget build-essential sudo locales && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && \
     locale-gen en_US.UTF-8 && \
     rm -rf /var/lib/apt/lists/*

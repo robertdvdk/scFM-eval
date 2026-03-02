@@ -17,6 +17,18 @@ class EmbeddingResult:
     embedding_dim: int
 
 
+@dataclass
+class FinetuneResult:
+    """Container for finetuning outputs (embeddings of ALL cells)."""
+
+    cell_embeddings: np.ndarray  # (n_cells, embedding_dim)
+    embedding_dim: int
+    best_val_loss: float
+    best_epoch: int
+    wandb_run_id: str | None = None
+    wandb_project: str | None = None
+
+
 class FoundationModelWrapper(ABC):
     """Abstract base class for single-cell foundation model wrappers.
 
